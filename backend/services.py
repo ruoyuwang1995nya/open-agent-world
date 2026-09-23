@@ -681,25 +681,52 @@ class ApplicationServices:
         manager.admission_check = self.summoning.assert_admission
         await manager.startup()
         for run in manager.list_runs():
-            if run.status is not RunStatus.INTERRUPTED or run.caller_kind != "conversation":
-                continue
-            if not run.caller_id or not run.context_id:
+            if (
+                run.caller_kind != "conversation"
+                or run.status not in TERMINAL_RUN_STATUSES
+                or not run.caller_id
+                or not run.context_id
+            ):
                 continue
             with self.database.locked() as db:
                 already_visible = db.execute(
                     """SELECT 1 FROM conversation_messages
                     WHERE run_id=? AND session_id=? AND is_final=1
-                    AND (sender_kind='agent' OR kind='run_outcome') LIMIT 1""",
+                    AND sender_kind IN ('agent','system') LIMIT 1""",
                     (run.run_id, run.context_id),
                 ).fetchone()
-            if already_visible is None:
-                await self._persist_conversation_outcome_notice(
-                    run.run_id,
-                    run.caller_id,
-                    run.context_id,
-                    f"{self._conversation_agent_name(run.agent_id)}'s response was interrupted by a backend restart.",
+            if already_visible is not None:
+                continue
+            if run.status is RunStatus.SUCCEEDED:
+                final_text = manager.final_text(run.run_id)
+                if final_text and self._can_agent_post_to_conversation_session(
+                    run.agent_id, run.caller_id, run.context_id
+                ):
+                    agent = self.world.get_card(run.agent_id)
+                    message = self._conversation_final_message(
+                        run.caller_id,
+                        run.context_id,
+                        sender_id=agent.id,
+                        sender_name=agent.name,
+                        content=final_text,
+                        run_id=run.run_id,
+                    )
+                    await self._publish_conversation_message(message)
+                    continue
+                notice = f"{self._conversation_agent_name(run.agent_id)} finished without producing a response."
+            elif run.status is RunStatus.FAILED:
+                notice = (
+                    f"{self._conversation_agent_name(run.agent_id)} could not respond: "
+                    f"{run.error or 'the runtime reported no error detail'}"
                 )
-        self.deliveries.recover_interrupted()
+            elif run.status is RunStatus.CANCELLED:
+                notice = f"{self._conversation_agent_name(run.agent_id)}'s response was stopped before completion."
+            else:
+                notice = f"{self._conversation_agent_name(run.agent_id)}'s response was interrupted by a backend restart."
+            await self._persist_conversation_outcome_notice(
+                run.run_id, run.caller_id, run.context_id, notice
+            )
+        self.deliveries.recover_after_restart()
         for agent_id in self.deliveries.all_queued_agents():
             task = asyncio.create_task(self._drain_conversation_agent(agent_id))
             task.add_done_callback(self._consume_background_task)
