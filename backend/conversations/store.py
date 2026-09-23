@@ -170,13 +170,6 @@ class ConversationStore:
                     """,
                     (session_id, agent_id, now),
                 )
-            for agent_id in dict.fromkeys(delivery_agent_ids or []):
-                connection.execute(
-                    """INSERT OR IGNORE INTO conversation_deliveries
-                    (conversation_id, session_id, message_id, agent_id, status, created_at)
-                    VALUES (?, ?, ?, ?, 'queued', ?)""",
-                    (conversation_id, session_id, message_id, agent_id, now),
-                )
             connection.execute(
                 """
                 UPDATE conversation_sessions
@@ -313,6 +306,13 @@ class ConversationStore:
                     json.dumps([item.model_dump() for item in attachments or []]),
                 ),
             )
+            for agent_id in dict.fromkeys(delivery_agent_ids or []):
+                connection.execute(
+                    """INSERT OR IGNORE INTO conversation_deliveries
+                    (conversation_id, session_id, message_id, agent_id, status, created_at)
+                    VALUES (?, ?, ?, ?, 'queued', ?)""",
+                    (conversation_id, session_id, message_id, agent_id, now),
+                )
             connection.execute(
                 """
                 UPDATE conversation_sessions
