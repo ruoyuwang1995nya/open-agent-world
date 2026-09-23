@@ -79,14 +79,24 @@ class ConversationDeliveryStore:
             ).fetchone()
         return row is not None
 
-    def claim_batch(self, conversation_id: str, session_id: str, agent_id: str, run_id: str) -> list[str]:
-        """Claim the currently queued burst for one Agent+session, oldest first."""
+    def claim_batch(
+        self,
+        conversation_id: str,
+        session_id: str,
+        agent_id: str,
+        run_id: str,
+        message_ids: list[str],
+    ) -> list[str]:
+        """Atomically claim exactly the burst selected for the next Run."""
+        if not message_ids:
+            return []
+        message_placeholders = ",".join("?" for _ in message_ids)
         with self.database.transaction(immediate=True) as db:
             rows = db.execute(
-                """SELECT id, message_id FROM conversation_deliveries
+                f"""SELECT id, message_id FROM conversation_deliveries
                 WHERE conversation_id=? AND session_id=? AND agent_id=? AND status='queued'
-                ORDER BY id""",
-                (conversation_id, session_id, agent_id),
+                AND message_id IN ({message_placeholders}) ORDER BY id""",
+                (conversation_id, session_id, agent_id, *message_ids),
             ).fetchall()
             if not rows:
                 return []
