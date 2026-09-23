@@ -44,6 +44,7 @@ from backend.conversations import (
     ConversationStore,
     ConversationSummary,
 )
+from backend.conversations.deliveries import ConversationDeliveryStore
 from backend.errors import (
     ConflictError,
     ConversationValidationError,
@@ -516,6 +517,7 @@ class _TemplateRestoreResources:
 @dataclass(frozen=True, slots=True)
 class _LifecycleConversations:
     conversations: ConversationStore
+    deliveries: ConversationDeliveryStore
     state: StateStore
 
     def create_initial_session(self, node_id: str, title: str) -> None:
@@ -547,6 +549,7 @@ class ApplicationServices:
     _sandbox_commands: dict[str, dict] = field(default_factory=dict, init=False, repr=False)
     _sandbox_tasks: dict[str, asyncio.Task] = field(default_factory=dict, init=False, repr=False)
     _sandbox_stopping: set[str] = field(default_factory=set, init=False, repr=False)
+    _conversation_delivery_locks: dict[str, asyncio.Lock] = field(default_factory=dict, init=False, repr=False)
     # Short-lived desktop review requests. Restart expires them; approval never
     # becomes a durable grant or an Agent tool argument.
     _minister_proposals: dict[str, dict] = field(default_factory=dict, init=False, repr=False)
@@ -677,6 +680,9 @@ class ApplicationServices:
         manager = self._require_run_manager()
         manager.admission_check = self.summoning.assert_admission
         await manager.startup()
+        self.deliveries.recover_interrupted()
+        for agent_id in self.deliveries.all_queued_agents():
+            asyncio.create_task(self._drain_conversation_agent(agent_id))
         await self.node_execution.startup()
         await self._retry_pending_node_deletions()
         context = self._node_lifecycle_context()
@@ -2694,9 +2700,9 @@ class ApplicationServices:
         for agent_id in mentions:
             self._require_session_participant(session, agent_id)
             self._require_conversation_connection(agent_id, conversation_id)
-        manager = self._require_run_manager()
-        for agent_id in mentions:
-            manager.assert_can_start(agent_id)
+
+        # Persistence is deliberately independent from Run admission. A busy
+        # Agent must never make the user's message disappear or fail to send.
         message = self.conversations.add_message(
             conversation_id,
             session_id,
@@ -2708,19 +2714,94 @@ class ApplicationServices:
             mention_agent_ids=mentions,
             attachments=attachments,
         )
+        self.deliveries.enqueue(conversation_id, session_id, message.id, mentions)
         await self._publish_conversation_message(message)
-        accepted: list[str] = []
+
         for agent_id in mentions:
-            prompt = self._conversation_prompt(
-                conversation_id, session, agent_id, request.content
+            asyncio.create_task(self._drain_conversation_agent(agent_id))
+        return ConversationPostResult(
+            message=message, accepted_agent_ids=mentions
+        )
+
+    def _conversation_delivery_prompt(
+        self,
+        conversation_id: str,
+        session: ConversationSession,
+        agent_id: str,
+        message_ids: list[str],
+    ) -> str:
+        messages = [self.conversations.get_message(message_id) for message_id in message_ids]
+        if len(messages) == 1:
+            latest = messages[0].content
+        else:
+            chunks = []
+            for index, message in enumerate(messages, start=1):
+                text = message.content
+                for attachment in message.attachments:
+                    text += (
+                        f"\n[Attachment: {attachment.name}; version_id={attachment.version_id}; "
+                        f"path={attachment.path}; {attachment.size_bytes} bytes]"
+                    )
+                chunks.append(f"{index}. {text}")
+            latest = (
+                "Additional messages received while you were working:\n\n"
+                + "\n".join(chunks)
             )
-            run = await self._require_run_manager().start_run(
-                agent_id,
-                prompt,
-                caller_kind="conversation",
-                caller_id=conversation_id,
-                context_id=session_id,
+        return self._conversation_prompt(
+            conversation_id, session, agent_id, latest
+        )
+
+    async def _drain_conversation_agent(self, agent_id: str) -> None:
+        """Start at most one queued Conversation burst for an Agent.
+
+        RunManager remains the capacity authority. This method only bridges the
+        durable delivery ledger into it and therefore never bypasses
+        max_concurrent_runs or provider admission.
+        """
+        lock = self._conversation_delivery_locks.setdefault(agent_id, asyncio.Lock())
+        async with lock:
+            batch = self.deliveries.next_batch(agent_id)
+            if batch is None:
+                return
+            conversation_id, session_id, message_ids, max_sequence = batch
+            manager = self._require_run_manager()
+            try:
+                manager.assert_can_start(agent_id)
+            except RuntimeUnavailableError:
+                return
+            try:
+                session = self.conversations.get_session(conversation_id, session_id)
+                self._require_session_participant(session, agent_id)
+                self._require_conversation_connection(agent_id, conversation_id)
+            except (NotFoundError, PermissionDeniedError):
+                return
+
+            run_id = str(uuid4())
+            claimed = self.deliveries.claim_batch(
+                conversation_id, session_id, agent_id, run_id
             )
+            if not claimed:
+                return
+            prompt = self._conversation_delivery_prompt(
+                conversation_id, session, agent_id, claimed
+            )
+            try:
+                run = await manager.start_run(
+                    agent_id,
+                    prompt,
+                    caller_kind="conversation",
+                    caller_id=conversation_id,
+                    context_id=session_id,
+                    run_id=run_id,
+                    initial_lifecycle={
+                        "delivery_message_ids": claimed,
+                        "conversation_max_sequence": max_sequence,
+                    },
+                )
+            except Exception:
+                self.deliveries.requeue_run(run_id)
+                raise
+
             task = asyncio.create_task(
                 self._persist_conversation_run(
                     agent_id, run.run_id, conversation_id, session_id
@@ -2731,10 +2812,6 @@ class ApplicationServices:
                     completed.exception() if not completed.cancelled() else None
                 )
             )
-            accepted.append(agent_id)
-        return ConversationPostResult(
-            message=message, accepted_agent_ids=accepted
-        )
 
     async def request_conversation_turn(
         self,
@@ -3318,6 +3395,18 @@ class ApplicationServices:
                 conversation_id,
                 session_id,
             )
+        finally:
+            # A terminal attempt consumes its claimed input even when cancelled
+            # or failed; messages queued while it was running belong to the next
+            # turn and are drained only after this outcome is durable.
+            self.deliveries.mark_run_done(run_id)
+            try:
+                await self._drain_conversation_agent(agent_id)
+            except Exception:
+                logger.exception(
+                    "failed to drain queued conversation deliveries for agent %s",
+                    agent_id,
+                )
 
     def _conversation_agent_name(self, agent_id: str) -> str:
         agent = self.world.maybe_get_card(agent_id)
@@ -3743,6 +3832,7 @@ def create_services(
         raise
     resources = ManagedResourceStore(database, settings.data_root)
     conversations = ConversationStore(database)
+    deliveries = ConversationDeliveryStore(database)
     capabilities = CapabilityBroker(world, resources, plugin_registry)
     events = EventHub(queue_size=settings.event_queue_size)
 
@@ -3799,6 +3889,7 @@ def create_services(
         events=events,
         plugins=plugin_registry,
         conversations=conversations,
+        deliveries=deliveries,
         state=state,
         contexts=contexts,
         legions=legions,
