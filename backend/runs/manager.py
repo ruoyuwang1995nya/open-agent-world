@@ -746,10 +746,11 @@ class RunManager:
                             active_tools = max(0, active_tools - 1)
                         current_lifecycle = self.get_run(record.run_id).lifecycle
                         trace = list(current_lifecycle.get("tool_trace") or [])
+                        call_id = event.payload.get("call_id")
                         trace.append({
                             "type": event_kind,
                             "name": str(event.payload.get("name") or "tool"),
-                            "call_id": event.payload.get("call_id"),
+                            **({"call_id": call_id} if isinstance(call_id, str) else {}),
                         })
                         self.store.update_lifecycle(
                             record.run_id,
