@@ -1,6 +1,8 @@
 import { useWorkspaceAccess } from '../workspace/WorkspaceAccess';
 import { t, useLocale } from "../i18n";
 import { useConversationTimeline } from "../state/useConversationTimeline";
+import { useRunActivity } from "../state/useRunActivity";
+import { RunActivityDetails, RunActivityStream } from "./RunActivityStream";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ConversationAttachments } from "./ConversationAttachments";
 import { ConversationActions } from "./ConversationActions";
@@ -158,6 +160,7 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
     }
   }, [outgoing]);
   const activeRuns = history.activeRuns;
+  const runActivities = useRunActivity(card.id, activeSessionId, runtimeEvents, activeRuns, history.runSummaries);
   const deliveryAgents = new Map(agents.map((agent) => [agent.id, agent.name]));
   const activeGroupId = activeSession?.group_id ?? activeSession?.id;
   const groups = [...new Map(sessions.map((session) => [session.group_id ?? session.id, session])).values()];
@@ -530,16 +533,8 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
                 ? <details className="conversation-tool-message"><summary>{message.content.split("\n")[0]}</summary><pre>{message.content.split("\n").slice(1).join("\n").trim() || t("No additional details")}</pre></details>
                 : message.content ? (message.sender_kind === "agent" ? <MarkdownMessage content={message.content} /> : <p>{message.content}</p>) : null}
                 {message.attachments?.length ? <ConversationAttachments conversationId={card.id} sessionId={message.session_id} files={message.attachments} /> : null}
-                {message.sender_kind === "agent" && message.run_id && history.runSummaries[message.run_id]?.tool_count ? (() => {
-                  const run = history.runSummaries[message.run_id!];
-                  const seconds = run.started_at && run.finished_at
-                    ? Math.max(0, Math.round((new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()) / 1000))
-                    : undefined;
-                  return <details className="conversation-tool-message">
-                    <summary>{seconds === undefined ? "" : `Worked for ${seconds}s · `}{run.tool_count} {t("tool calls")}</summary>
-                    <ul>{run.tool_trace.map((item, index) => <li key={`${item.call_id ?? item.name}-${index}`}>{item.name}</li>)}</ul>
-                  </details>;
-                })() : null}
+                {message.run_id && (history.runSummaries[message.run_id] || runActivities.get(message.run_id)?.items.length) ?
+                  <RunActivityDetails run={history.runSummaries[message.run_id]} activity={runActivities.get(message.run_id)} /> : null}
                 {message.sender_kind === "user" ? (() => {
                   const queued = history.deliveries.filter((delivery) => delivery.message_id === message.id && delivery.status === "queued");
                   if (!queued.length) return null;
@@ -567,21 +562,10 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
               <article className="workspace-message is-agent is-responding" key={run.run_id}
                 data-responding-agent-id={run.agent_id}
                 aria-label={t("{v0} is responding", { v0: String(agent?.name ?? run.agent_id) })}>
-                <span><Bot size={13} /></span>
-                <div>
-                  <div className="conversation-run-heading">
-                    <strong>{agent?.name ?? run.agent_id} · {stopping ? t("Stopping…") : t(run.status === "waiting" ? "Waiting" : "Running")}</strong>
-                    <button type="button" className="secondary-button" disabled={stopping}
-                      onClick={() => void stopRun(run.run_id)}>{stopping ? t("Stopping…") : t("Stop")}</button>
-                  </div>
-                  {run.progress ? <p className="conversation-run-progress">{run.progress}</p>
-                    : run.live_text ? <MarkdownMessage content={run.live_text} />
-                    : <div className="conversation-typing-bubble" aria-hidden="true"><i /><i /><i /></div>}
-                  {run.tool_count > 0 ? <details className="conversation-tool-message">
-                    <summary>{run.tool_count} {t("tool calls")}{run.awaiting ? ` · ${run.awaiting}` : ""}</summary>
-                    <ul>{run.tool_trace.map((item, index) => <li key={`${item.call_id ?? item.name}-${index}`}>{item.name}</li>)}</ul>
-                  </details> : null}
-                </div>
+                <span title={agent?.name}><Bot size={13} /></span>
+                <RunActivityStream activity={runActivities.get(run.run_id)} active
+                  waiting={run.status === "waiting"} stopping={stopping}
+                  onStop={() => void stopRun(run.run_id)} />
               </article>
             );
           }) : null}

@@ -20,7 +20,7 @@ from backend.agents import (
 from backend.errors import RuntimeUnavailableError
 from backend.legions.runtime import group_context, member_team
 from backend.events.hub import EventHub
-from backend.events.models import EventType
+from backend.events.models import EventType, RuntimeEvent
 from backend.plugins import PluginRegistry
 from backend.state import StateContext, StateScope, StateStore
 from backend.world.models import Card, CardPatch
@@ -36,6 +36,7 @@ from .models import (
     TERMINAL_RUN_STATUSES,
 )
 from .store import RunStore
+from .trace import public_tool_payload
 
 logger = logging.getLogger(__name__)
 
@@ -726,7 +727,7 @@ class RunManager:
                         raise RuntimeError(
                             "runtime provider emitted an event for a different Agent or Run"
                         )
-                    await self._publish_provider_event(event, record)
+                    published = await self._publish_provider_event(event, record)
                     event_kind = event.type.value
                     text = event.payload.get("text")
                     if event_kind == "agent_message" and isinstance(text, str):
@@ -746,11 +747,13 @@ class RunManager:
                             active_tools = max(0, active_tools - 1)
                         current_lifecycle = self.get_run(record.run_id).lifecycle
                         trace = list(current_lifecycle.get("tool_trace") or [])
-                        call_id = event.payload.get("call_id")
+                        # Use the same identity and sanitized details in REST
+                        # and WebSocket so reconnects do not duplicate tool rows.
                         trace.append({
+                            **published.payload,
+                            "id": published.id,
+                            "timestamp": published.timestamp.isoformat(),
                             "type": event_kind,
-                            "name": str(event.payload.get("name") or "tool"),
-                            **({"call_id": call_id} if isinstance(call_id, str) else {}),
                         })
                         self.store.update_lifecycle(
                             record.run_id,
@@ -1036,18 +1039,21 @@ class RunManager:
 
     async def _publish_provider_event(
         self, event: AgentEvent, record: RunRecord
-    ) -> None:
+    ) -> RuntimeEvent:
         # AgentEvent.COMPLETED means one provider turn finished. Run success is
         # controlled only by the separate explicit ``run_status`` transition.
         conversation_id, session_id = self._conversation_scope(record)
-        await self.events.publish(
+        payload = (public_tool_payload(event.payload)
+                   if event.type.value in {"tool_started", "tool_completed"}
+                   else dict(event.payload))
+        return await self.events.publish(
             EventType(event.type.value),
             node_id=record.agent_id,
             agent_id=record.agent_id,
             run_id=record.run_id,
             conversation_id=conversation_id,
             session_id=session_id,
-            payload={**dict(event.payload), "run_id": record.run_id},
+            payload={**payload, "run_id": record.run_id},
         )
 
     async def _publish_agent_operational(

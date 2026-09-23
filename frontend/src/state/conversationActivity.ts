@@ -91,6 +91,7 @@ export function activeConversationRuns(
 ): ConversationRunSummary[] {
   if (!sessionId) return [];
   const runs = new Map(snapshot.map((run) => [run.run_id, { ...run, tool_trace: [...(run.tool_trace ?? [])] }]));
+  const ended = new Set<string>();
   for (const event of [...events].reverse()) {
     if (
       scopeValue(event, "conversation_id") !== conversationId
@@ -101,8 +102,12 @@ export function activeConversationRuns(
     const type = normalizedType(event);
     if (["run_succeeded", "run_failed", "run_cancelled", "run_interrupted"].includes(type)) {
       runs.delete(id);
+      ended.add(id);
       continue;
     }
+    // Operational/status cleanup events must not resurrect a terminal Run.
+    if (ended.has(id) || !["run_created", "run_started", "run_resumed", "run_waiting",
+      "agent_started", "agent_message", "agent_progress", "tool_started", "tool_completed"].includes(type)) continue;
     const durable = eventRun(event);
     const existing = runs.get(id);
     const current: ConversationRunSummary = {
@@ -128,12 +133,12 @@ export function activeConversationRuns(
       const name = typeof event.payload.name === "string" ? event.payload.name : "tool";
       current.awaiting = name;
       current.tool_count += 1;
-      current.tool_trace = [...current.tool_trace, { type, name,
+      current.tool_trace = [...current.tool_trace, { ...event.payload, id: event.id, timestamp: event.timestamp, type, name,
         ...(typeof event.payload.call_id === "string" ? { call_id: event.payload.call_id } : {}) }].slice(-50);
     } else if (type === "tool_completed") {
       const name = typeof event.payload.name === "string" ? event.payload.name : "tool";
       current.awaiting = undefined;
-      current.tool_trace = [...current.tool_trace, { type, name,
+      current.tool_trace = [...current.tool_trace, { ...event.payload, id: event.id, timestamp: event.timestamp, type, name,
         ...(typeof event.payload.call_id === "string" ? { call_id: event.payload.call_id } : {}) }].slice(-50);
     }
     runs.set(id, current);
