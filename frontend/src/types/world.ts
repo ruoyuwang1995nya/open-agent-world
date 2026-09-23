@@ -388,8 +388,37 @@ export interface ContainerDefinition {
   document_field: string | null;
 }
 
+export interface ConversationToolTrace {
+  type: string;
+  name: string;
+  call_id?: string;
+}
+
+export interface ConversationRunSummary {
+  run_id: string;
+  agent_id: string;
+  status: string;
+  started_at?: string;
+  finished_at?: string;
+  awaiting?: string;
+  progress?: string;
+  tool_count: number;
+  tool_trace: ConversationToolTrace[];
+  live_text?: string;
+}
+
+export interface ConversationDeliveryState {
+  message_id: string;
+  agent_id: string;
+  status: "queued" | "claimed";
+  claimed_run_id?: string;
+}
+
 export interface ConversationMessagePage {
   active_agent_ids?: string[];
+  active_runs?: ConversationRunSummary[];
+  deliveries?: ConversationDeliveryState[];
+  run_summaries?: Record<string, ConversationRunSummary>;
   items: ConversationMessage[];
   has_before: boolean;
   has_after: boolean;
