@@ -2810,7 +2810,7 @@ class ApplicationServices:
 
             run_id = str(uuid4())
             claimed = self.deliveries.claim_batch(
-                conversation_id, session_id, agent_id, run_id
+                conversation_id, session_id, agent_id, run_id, message_ids
             )
             if not claimed:
                 return
