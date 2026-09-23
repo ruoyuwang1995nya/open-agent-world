@@ -914,15 +914,20 @@ async def test_empty_successful_conversation_run_persists_a_system_notice(
 
 
 @pytest.mark.asyncio
-async def test_suspended_conversation_run_surfaces_a_wait_notice(
+async def test_suspended_conversation_run_stays_live_without_polluting_history(
     data_root: Path,
 ) -> None:
     services = _scripted_conversation_services(data_root, "waiting")
     try:
         messages = await _post_and_collect_outcome(services)
-        assert [item.sender_kind for item in messages] == ["user", "system"]
-        assert "paused this response to wait on external work" in messages[-1].content
+        assert [item.sender_kind for item in messages] == ["user"]
+        conversation = next(card for card in services.world.list_cards() if card.type == "conversation")
+        session = services.conversations.list_sessions(conversation.id)[0]
+        page = services.conversations.page_messages(conversation.id, session.id)
+        assert len(page.active_runs) == 1
+        assert page.active_runs[0].status == "waiting"
     finally:
+        await services.shutdown()
         services.close()
 
 
