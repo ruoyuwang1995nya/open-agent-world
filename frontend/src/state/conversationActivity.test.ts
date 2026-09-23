@@ -40,6 +40,19 @@ describe("conversation response activity", () => {
     });
   });
 
+  it("shows newer streamed output instead of stale progress", () => {
+    const events = [
+      runtimeEvent("4", "agent_message", "atlas", "session-a", { run_id: "run-1", text: "Fresh answer" }),
+      runtimeEvent("3", "tool_started", "atlas", "session-a", { run_id: "run-1", name: "read_file" }),
+      runtimeEvent("2", "agent_progress", "atlas", "session-a", { run_id: "run-1", text: "Running read_file" }),
+      runtimeEvent("1", "run_started", "atlas", "session-a", { run_id: "run-1" }),
+    ];
+    expect(activeConversationRuns(events, "conversation-a", "session-a")[0]).toMatchObject({
+      live_text: "Fresh answer",
+      progress: undefined,
+    });
+  });
+
   it("removes a live run on its terminal event", () => {
     const events = [
       runtimeEvent("2", "run_cancelled", "atlas", "session-a", { run_id: "run-1" }),
