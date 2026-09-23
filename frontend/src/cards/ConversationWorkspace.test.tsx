@@ -268,8 +268,8 @@ describe("ConversationWorkspace snapshots", () => {
     }));
     render(<ConversationWorkspace card={card} />);
     await screen.findByText(historicalMessage.content);
-    const started = { id: "start", type: "run_started", agent_id: "atlas", conversation_id: card.id,
-      session_id: session.id, timestamp: historicalMessage.created_at, payload: {} };
+    const started = { id: "start", type: "run_started", run_id: "run-1", agent_id: "atlas", conversation_id: card.id,
+      session_id: session.id, timestamp: historicalMessage.created_at, payload: { run_id: "run-1" } };
     act(() => useWorldStore.setState({ events: [started] }));
     expect(screen.getByLabelText("Atlas is responding")).toBeTruthy();
     act(() => useWorldStore.setState({ events: [{ ...started, id: "cancel", type: "run_cancelled" }, started] }));
