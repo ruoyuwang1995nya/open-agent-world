@@ -388,7 +388,7 @@ class ConversationStore:
         self.get_session(conversation_id, session_id)
         if before is not None and after is not None:
             raise ConversationValidationError("use either before or after")
-        clauses = 'conversation_id = ? AND session_id = ?'
+        clauses = 'conversation_id = ? AND session_id = ? AND is_final = 1'
         values: list = [conversation_id, session_id]
         if before is not None:
             clauses += ' AND sequence < ?'
@@ -404,8 +404,8 @@ class ConversationStore:
                 rows = list(reversed(rows))
             low = rows[0]['sequence'] if rows else (after or before or 0)
             high = rows[-1]['sequence'] if rows else (after or before or 0)
-            has_before = connection.execute('SELECT 1 FROM conversation_messages WHERE session_id = ? AND sequence < ? LIMIT 1', (session_id, low)).fetchone() is not None
-            has_after = connection.execute('SELECT 1 FROM conversation_messages WHERE session_id = ? AND sequence > ? LIMIT 1', (session_id, high)).fetchone() is not None
+            has_before = connection.execute('SELECT 1 FROM conversation_messages WHERE session_id = ? AND is_final = 1 AND sequence < ? LIMIT 1', (session_id, low)).fetchone() is not None
+            has_after = connection.execute('SELECT 1 FROM conversation_messages WHERE session_id = ? AND is_final = 1 AND sequence > ? LIMIT 1', (session_id, high)).fetchone() is not None
             active = connection.execute("""SELECT * FROM runs WHERE
                 caller_kind = 'conversation' AND caller_id = ? AND context_id = ?
                 AND status IN ('created', 'running', 'waiting')
