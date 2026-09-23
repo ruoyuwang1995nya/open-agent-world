@@ -158,7 +158,6 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
     }
   }, [outgoing]);
   const activeRuns = history.activeRuns;
-  const respondingAgents = participants.filter((agent) => history.activeAgentIds.includes(agent.id));
   const deliveryAgents = new Map(agents.map((agent) => [agent.id, agent.name]));
   const activeGroupId = activeSession?.group_id ?? activeSession?.id;
   const groups = [...new Map(sessions.map((session) => [session.group_id ?? session.id, session])).values()];
