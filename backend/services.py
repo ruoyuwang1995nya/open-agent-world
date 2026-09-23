@@ -550,6 +550,7 @@ class ApplicationServices:
     _sandbox_tasks: dict[str, asyncio.Task] = field(default_factory=dict, init=False, repr=False)
     _sandbox_stopping: set[str] = field(default_factory=set, init=False, repr=False)
     _conversation_delivery_locks: dict[str, asyncio.Lock] = field(default_factory=dict, init=False, repr=False)
+    _conversation_delivery_waiters: dict[str, asyncio.Task] = field(default_factory=dict, init=False, repr=False)
     # Short-lived desktop review requests. Restart expires them; approval never
     # becomes a durable grant or an Agent tool argument.
     _minister_proposals: dict[str, dict] = field(default_factory=dict, init=False, repr=False)
@@ -680,6 +681,23 @@ class ApplicationServices:
         manager = self._require_run_manager()
         manager.admission_check = self.summoning.assert_admission
         await manager.startup()
+        for run in manager.list_runs():
+            if run.status is not RunStatus.INTERRUPTED or run.caller_kind != "conversation":
+                continue
+            if not run.caller_id or not run.context_id:
+                continue
+            with self.database.locked() as db:
+                already_visible = db.execute(
+                    "SELECT 1 FROM conversation_messages WHERE run_id=? AND session_id=? LIMIT 1",
+                    (run.run_id, run.context_id),
+                ).fetchone()
+            if already_visible is None:
+                await self._persist_conversation_outcome_notice(
+                    run.run_id,
+                    run.caller_id,
+                    run.context_id,
+                    f"{self._conversation_agent_name(run.agent_id)}'s response was interrupted by a backend restart.",
+                )
         self.deliveries.recover_interrupted()
         for agent_id in self.deliveries.all_queued_agents():
             asyncio.create_task(self._drain_conversation_agent(agent_id))
@@ -2769,6 +2787,19 @@ class ApplicationServices:
             try:
                 manager.assert_can_start(agent_id)
             except RuntimeUnavailableError:
+                active = [
+                    run for run in manager.list_runs(agent_id=agent_id)
+                    if run.status not in TERMINAL_RUN_STATUSES
+                ]
+                if active and (
+                    agent_id not in self._conversation_delivery_waiters
+                    or self._conversation_delivery_waiters[agent_id].done()
+                ):
+                    waiter = asyncio.create_task(
+                        self._wait_for_conversation_capacity(agent_id, [run.run_id for run in active])
+                    )
+                    self._conversation_delivery_waiters[agent_id] = waiter
+                    waiter.add_done_callback(self._consume_background_task)
                 return
             try:
                 session = self.conversations.get_session(conversation_id, session_id)
@@ -2813,6 +2844,16 @@ class ApplicationServices:
                     completed.exception() if not completed.cancelled() else None
                 )
             )
+
+    async def _wait_for_conversation_capacity(
+        self, agent_id: str, run_ids: list[str]
+    ) -> None:
+        manager = self._require_run_manager()
+        try:
+            await asyncio.gather(*(manager.wait_terminal(run_id) for run_id in run_ids))
+        finally:
+            self._conversation_delivery_waiters.pop(agent_id, None)
+        await self._drain_conversation_agent(agent_id)
 
     async def request_conversation_turn(
         self,
