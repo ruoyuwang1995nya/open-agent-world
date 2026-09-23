@@ -27,6 +27,32 @@ class ConversationDeliveryStore:
                     (conversation_id, session_id, message_id, agent_id, now),
                 )
 
+    def next_batch(self, agent_id: str) -> tuple[str, str, list[str], int] | None:
+        """Return the oldest queued Agent+session burst without mutating it."""
+        with self.database.locked() as db:
+            first = db.execute(
+                """SELECT conversation_id, session_id FROM conversation_deliveries
+                WHERE agent_id=? AND status='queued' ORDER BY id LIMIT 1""",
+                (agent_id,),
+            ).fetchone()
+            if first is None:
+                return None
+            rows = db.execute(
+                """SELECT d.message_id, m.sequence FROM conversation_deliveries d
+                JOIN conversation_messages m ON m.id=d.message_id
+                WHERE d.agent_id=? AND d.conversation_id=? AND d.session_id=?
+                AND d.status='queued' ORDER BY d.id""",
+                (agent_id, first["conversation_id"], first["session_id"]),
+            ).fetchall()
+        if not rows:
+            return None
+        return (
+            str(first["conversation_id"]),
+            str(first["session_id"]),
+            [str(row["message_id"]) for row in rows],
+            max(int(row["sequence"]) for row in rows),
+        )
+
     def queued_agents(self, conversation_id: str, session_id: str) -> list[str]:
         with self.database.locked() as db:
             rows = db.execute(
