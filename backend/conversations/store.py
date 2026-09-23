@@ -7,7 +7,14 @@ from uuid import uuid4
 from backend.errors import ConflictError, ConversationValidationError, NotFoundError
 from backend.persistence.database import Database
 
-from .models import ConversationMessage, ConversationMessagePage, ConversationSession, ConversationSessionCreate
+from .models import (
+    ConversationDeliveryState,
+    ConversationMessage,
+    ConversationMessagePage,
+    ConversationRunSummary,
+    ConversationSession,
+    ConversationSessionCreate,
+)
 
 
 def _now() -> str:
@@ -399,11 +406,58 @@ class ConversationStore:
             high = rows[-1]['sequence'] if rows else (after or before or 0)
             has_before = connection.execute('SELECT 1 FROM conversation_messages WHERE session_id = ? AND sequence < ? LIMIT 1', (session_id, low)).fetchone() is not None
             has_after = connection.execute('SELECT 1 FROM conversation_messages WHERE session_id = ? AND sequence > ? LIMIT 1', (session_id, high)).fetchone() is not None
-            active = connection.execute("""SELECT DISTINCT agent_id FROM runs WHERE
+            active = connection.execute("""SELECT * FROM runs WHERE
                 caller_kind = 'conversation' AND caller_id = ? AND context_id = ?
-                AND status IN ('created', 'running', 'waiting')""", (conversation_id, session_id)).fetchall()
-        return ConversationMessagePage(items=[self._message(row) for row in rows], has_before=has_before, has_after=has_after,
-                                       active_agent_ids=[str(row['agent_id']) for row in active])
+                AND status IN ('created', 'running', 'waiting')
+                ORDER BY created_at""", (conversation_id, session_id)).fetchall()
+            pending = connection.execute("""SELECT message_id, agent_id, status, claimed_run_id
+                FROM conversation_deliveries WHERE conversation_id=? AND session_id=?
+                AND status IN ('queued','claimed') ORDER BY id""",
+                (conversation_id, session_id)).fetchall()
+            run_ids = [str(row["run_id"]) for row in active]
+            run_ids.extend(str(row["run_id"]) for row in rows if row["run_id"])
+            summaries = {}
+            if run_ids:
+                unique_ids = list(dict.fromkeys(run_ids))
+                placeholders = ",".join("?" for _ in unique_ids)
+                summary_rows = connection.execute(
+                    f"SELECT * FROM runs WHERE run_id IN ({placeholders})", unique_ids
+                ).fetchall()
+                summaries = {
+                    str(row["run_id"]): self._run_summary(row)
+                    for row in summary_rows
+                }
+        active_runs = [self._run_summary(row) for row in active]
+        return ConversationMessagePage(
+            items=[self._message(row) for row in rows],
+            has_before=has_before,
+            has_after=has_after,
+            active_agent_ids=[item.agent_id for item in active_runs],
+            active_runs=active_runs,
+            deliveries=[ConversationDeliveryState(
+                message_id=str(row["message_id"]), agent_id=str(row["agent_id"]),
+                status=str(row["status"]), claimed_run_id=row["claimed_run_id"])
+                for row in pending],
+            run_summaries=summaries,
+        )
+
+    @staticmethod
+    def _run_summary(row: object) -> ConversationRunSummary:
+        lifecycle = json.loads(row["lifecycle_json"] or "{}")
+        trace = lifecycle.get("tool_trace")
+        if not isinstance(trace, list):
+            trace = []
+        return ConversationRunSummary(
+            run_id=str(row["run_id"]),
+            agent_id=str(row["agent_id"]),
+            status=str(row["status"]),
+            started_at=datetime.fromisoformat(str(row["started_at"])) if row["started_at"] else None,
+            finished_at=datetime.fromisoformat(str(row["finished_at"])) if row["finished_at"] else None,
+            awaiting=lifecycle.get("awaiting") if isinstance(lifecycle.get("awaiting"), str) else None,
+            progress=lifecycle.get("progress") if isinstance(lifecycle.get("progress"), str) else None,
+            tool_count=int(lifecycle.get("tool_count") or len(trace)),
+            tool_trace=trace[-50:],
+        )
 
     @staticmethod
     def _session(row: object, participants: list[str]) -> ConversationSession:
