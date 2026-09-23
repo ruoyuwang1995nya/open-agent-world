@@ -700,7 +700,8 @@ class ApplicationServices:
                 )
         self.deliveries.recover_interrupted()
         for agent_id in self.deliveries.all_queued_agents():
-            asyncio.create_task(self._drain_conversation_agent(agent_id))
+            task = asyncio.create_task(self._drain_conversation_agent(agent_id))
+            task.add_done_callback(self._consume_background_task)
         await self.node_execution.startup()
         await self._retry_pending_node_deletions()
         context = self._node_lifecycle_context()
@@ -2736,7 +2737,8 @@ class ApplicationServices:
         await self._publish_conversation_message(message)
 
         for agent_id in mentions:
-            asyncio.create_task(self._drain_conversation_agent(agent_id))
+            task = asyncio.create_task(self._drain_conversation_agent(agent_id))
+            task.add_done_callback(self._consume_background_task)
         return ConversationPostResult(
             message=message, accepted_agent_ids=mentions
         )
@@ -3439,16 +3441,21 @@ class ApplicationServices:
             )
         finally:
             # A terminal attempt consumes its claimed input even when cancelled
-            # or failed; messages queued while it was running belong to the next
-            # turn and are drained only after this outcome is durable.
-            self.deliveries.mark_run_done(run_id)
+            # or failed. If persistence itself was interrupted before the Run
+            # became terminal, keep the claim for startup recovery instead.
             try:
-                await self._drain_conversation_agent(agent_id)
+                terminal = self._require_run_manager().get_run(run_id).status in TERMINAL_RUN_STATUSES
             except Exception:
-                logger.exception(
-                    "failed to drain queued conversation deliveries for agent %s",
-                    agent_id,
-                )
+                terminal = False
+            if terminal:
+                self.deliveries.mark_run_done(run_id)
+                try:
+                    await self._drain_conversation_agent(agent_id)
+                except Exception:
+                    logger.exception(
+                        "failed to drain queued conversation deliveries for agent %s",
+                        agent_id,
+                    )
 
     def _conversation_agent_name(self, agent_id: str) -> str:
         agent = self.world.maybe_get_card(agent_id)
