@@ -101,7 +101,6 @@ class RunManager:
     _live_output: dict[str, str] = field(default_factory=dict)
     admission_check: Any = None
     cleanup_execution: Callable[[str], Awaitable[None]] | None = None
-    persist_provider_event: Callable[[AgentEvent, RunRecord, str, str], Awaitable[str | None]] | None = None
 
     def __post_init__(self):
         import math
