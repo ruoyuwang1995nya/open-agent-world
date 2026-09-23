@@ -612,6 +612,63 @@ async def test_busy_conversation_agent_queues_and_batches_later_messages(
 
 
 @pytest.mark.asyncio
+async def test_one_message_creates_independent_deliveries_for_multiple_agents(
+    data_root: Path,
+) -> None:
+    from backend.conversations import ConversationPost
+    from backend.runs import TERMINAL_RUN_STATUSES
+
+    settings = Settings.for_data_root(data_root)
+    services = create_services(settings)
+    runtime = MockAgentRuntime(WorldAgentCapabilityProvider(services))
+    services.install_runtime_provider("core.mock", runtime, default=True)
+    try:
+        atlas = await services.create_card(CardCreate(type="agent", name="Atlas"))
+        river = await services.create_card(CardCreate(type="agent", name="River"))
+        conversation = await services.create_card(
+            CardCreate(type="conversation", name="Multi-agent queue")
+        )
+        for agent in (atlas, river):
+            await services.create_edge(EdgeCreate(
+                source=agent.id, target=conversation.id, relationship="participate"
+            ))
+        session = await services.create_conversation_session(
+            conversation.id,
+            ConversationSessionCreate(
+                title="Multi", participant_ids=[atlas.id, river.id]
+            ),
+        )
+        result = await services.post_conversation_message(
+            conversation.id,
+            session.id,
+            ConversationPost(
+                content="Both of you inspect this",
+                mention_agent_ids=[atlas.id, river.id],
+            ),
+        )
+
+        manager = services._require_run_manager()
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = manager.list_runs()
+            targeted = [run for run in runs if run.agent_id in {atlas.id, river.id}]
+            if len(targeted) == 2 and all(run.status in TERMINAL_RUN_STATUSES for run in targeted):
+                break
+        targeted = [
+            run for run in manager.list_runs()
+            if run.agent_id in {atlas.id, river.id}
+        ]
+        assert {run.agent_id for run in targeted} == {atlas.id, river.id}
+        assert all(run.lifecycle["delivery_message_ids"] == [result.message.id] for run in targeted)
+        assert services.conversations.page_messages(
+            conversation.id, session.id
+        ).deliveries == []
+    finally:
+        await services.shutdown()
+        services.close()
+
+
+@pytest.mark.asyncio
 async def test_cancelled_conversation_run_drains_the_next_queued_turn(
     data_root: Path,
 ) -> None:
