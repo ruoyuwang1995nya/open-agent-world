@@ -134,16 +134,34 @@ class ConversationDeliveryStore:
                 (run_id,),
             )
 
-    def recover_interrupted(self) -> None:
-        """Requeue claims whose Run cannot still be executing after restart."""
+    def recover_after_restart(self) -> None:
+        """Reconcile claims after RunManager has interrupted incomplete Runs."""
         with self.database.transaction(immediate=True) as db:
+            # No Run row means the process died after claim but before
+            # RunStore.create(); interrupted work is safe to retry.
             db.execute(
                 """UPDATE conversation_deliveries
                 SET status='queued', claimed_run_id=NULL, claimed_at=NULL
+                WHERE status='claimed' AND (
+                    claimed_run_id IS NULL
+                    OR NOT EXISTS (
+                        SELECT 1 FROM runs WHERE runs.run_id=conversation_deliveries.claimed_run_id
+                    )
+                    OR claimed_run_id IN (
+                        SELECT run_id FROM runs WHERE status='interrupted'
+                    )
+                )"""
+            )
+            # A terminal attempt other than restart interruption already
+            # consumed its input. Do not replay failed/cancelled/succeeded work.
+            db.execute(
+                """UPDATE conversation_deliveries
+                SET status='done', completed_at=?
                 WHERE status='claimed' AND claimed_run_id IN (
                     SELECT run_id FROM runs
-                    WHERE status IN ('failed','cancelled','interrupted')
-                )"""
+                    WHERE status IN ('succeeded','failed','cancelled')
+                )""",
+                (_now(),),
             )
 
     def list_pending(self, conversation_id: str, session_id: str) -> list[dict]:
