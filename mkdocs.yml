@@ -62,6 +62,8 @@ exclude_docs: |
   /READER_TRANSITION.md
   /matcreator-demo-plan.md
   /assets/demos/README.md
+  /marketplace-production.md
+  /pack-store-acceptance.md
 validation:
   nav:
     omitted_files: warn
