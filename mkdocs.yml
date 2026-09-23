@@ -128,6 +128,7 @@ nav:
   - 简体中文:
       - README.zh-CN.md
       - 使用入门: user-guide/index.zh-CN.md
+      - MatCreator 预设 Legion 示例: user-guide/matcreator-example.zh-CN.md
       - 插件开发路线: developers/index.zh-CN.md
       - 从源码运行: getting-started.zh-CN.md
       - 交互教程与实现: tutorial.zh-CN.md
