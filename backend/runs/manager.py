@@ -891,6 +891,9 @@ class RunManager:
             return
         if status in TERMINAL_RUN_STATUSES:
             self._release_agent_slot(run_id)
+            # Successful terminal output has already been checkpointed once
+            # before the terminal transition; release the ephemeral overlay.
+            self._live_output.pop(run_id, None)
 
     def _provider_id(self, card: Card) -> str:
         provider_id = self._optional_provider_id(card)
