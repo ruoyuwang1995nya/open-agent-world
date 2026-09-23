@@ -2817,17 +2817,33 @@ class ApplicationServices:
             try:
                 manager.assert_can_start(agent_id)
             except RuntimeUnavailableError:
+                runs = manager.list_runs(agent_id=agent_id)
                 active = [
-                    run for run in manager.list_runs(agent_id=agent_id)
+                    run for run in runs
                     if run.status not in TERMINAL_RUN_STATUSES
                 ]
-                if active and (
+                cleanup_blockers = [
+                    run for run in runs
+                    if run.lifecycle.get("cleanup") in {"pending", "failed"}
+                ]
+                if (
                     agent_id not in self._conversation_delivery_waiters
                     or self._conversation_delivery_waiters[agent_id].done()
                 ):
-                    waiter = asyncio.create_task(
-                        self._wait_for_conversation_capacity(agent_id, [run.run_id for run in active])
-                    )
+                    if active:
+                        waiter = asyncio.create_task(
+                            self._wait_for_conversation_capacity(
+                                agent_id, [run.run_id for run in active]
+                            )
+                        )
+                    elif cleanup_blockers:
+                        waiter = asyncio.create_task(
+                            self._join_conversation_cleanup(
+                                agent_id, [run.run_id for run in cleanup_blockers]
+                            )
+                        )
+                    else:
+                        return
                     self._conversation_delivery_waiters[agent_id] = waiter
                     waiter.add_done_callback(self._consume_background_task)
                 return
@@ -2879,8 +2895,32 @@ class ApplicationServices:
         self, agent_id: str, run_ids: list[str]
     ) -> None:
         manager = self._require_run_manager()
+        waiters = [
+            asyncio.create_task(manager.wait_terminal(run_id))
+            for run_id in run_ids
+        ]
         try:
-            await asyncio.gather(*(manager.wait_terminal(run_id) for run_id in run_ids))
+            if waiters:
+                done, pending = await asyncio.wait(
+                    waiters, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    task.result()
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+        finally:
+            self._conversation_delivery_waiters.pop(agent_id, None)
+        await self._drain_conversation_agent(agent_id)
+
+    async def _join_conversation_cleanup(
+        self, agent_id: str, run_ids: list[str]
+    ) -> None:
+        manager = self._require_run_manager()
+        try:
+            for run_id in run_ids:
+                await manager.cancel_run(run_id)
         finally:
             self._conversation_delivery_waiters.pop(agent_id, None)
         await self._drain_conversation_agent(agent_id)
