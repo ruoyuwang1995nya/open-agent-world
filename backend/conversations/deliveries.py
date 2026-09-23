@@ -53,6 +53,14 @@ class ConversationDeliveryStore:
             max(int(row["sequence"]) for row in rows),
         )
 
+    def all_queued_agents(self) -> list[str]:
+        with self.database.locked() as db:
+            rows = db.execute(
+                """SELECT DISTINCT agent_id FROM conversation_deliveries
+                WHERE status='queued' ORDER BY agent_id"""
+            ).fetchall()
+        return [str(row["agent_id"]) for row in rows]
+
     def queued_agents(self, conversation_id: str, session_id: str) -> list[str]:
         with self.database.locked() as db:
             rows = db.execute(
