@@ -44,3 +44,30 @@
   .context-pressure-fill { transition: none; }
   .context-avatar.is-compacting .context-pressure-fill { animation: none; }
 }
+
+
+/* Conversation Run overlay: compact, chat-first execution state. */
+.conversation-run-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.conversation-run-heading .secondary-button {
+  flex: 0 0 auto;
+  min-height: 26px;
+  padding: 3px 9px;
+}
+
+.conversation-run-progress {
+  margin: 4px 0;
+  opacity: .78;
+}
+
+.conversation-tool-message > ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  max-height: 160px;
+  overflow: auto;
+}
