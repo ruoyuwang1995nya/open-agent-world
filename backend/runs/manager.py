@@ -756,6 +756,11 @@ class RunManager:
                             record.run_id,
                             active_tools=active_tools,
                             awaiting=str(event.payload.get("name") or "tool execution") if active_tools else None,
+                            progress=(
+                                current_lifecycle.get("progress")
+                                if event_kind == "tool_started"
+                                else None
+                            ),
                             last_signal=event_kind,
                             tool_count=int(current_lifecycle.get("tool_count") or 0)
                                 + (1 if event_kind == "tool_started" else 0),
