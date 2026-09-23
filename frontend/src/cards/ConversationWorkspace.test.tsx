@@ -250,7 +250,7 @@ describe("ConversationWorkspace snapshots", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     await waitFor(() => expect(cancel).toHaveBeenCalledWith("run-1"));
-    expect(screen.getByText(/Stopping/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Stopping/ })).toBeTruthy();
 
     act(() => useWorldStore.setState({ events: [{ ...started, id: "stop", type: "run_succeeded" }, started] }));
     expect(screen.queryByLabelText("Atlas is responding")).toBeNull();
@@ -358,9 +358,11 @@ describe("ConversationWorkspace snapshots", () => {
     render(<ConversationWorkspace card={card} />);
     await screen.findByText("Final answer");
     expect(screen.queryByText("Checking the file")).toBeNull();
-    expect(screen.getByText(/1 tool calls/)).toBeTruthy();
-    expect(screen.queryByText("read_file")).toBeNull();
-    fireEvent.click(screen.getByText(/1 tool calls/));
+    const summary = screen.getByText(/1 tool calls/);
+    const details = summary.closest("details") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    fireEvent.click(summary);
+    expect(details.open).toBe(true);
     expect(screen.getByText("read_file")).toBeTruthy();
   });
 
