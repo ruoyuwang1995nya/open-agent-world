@@ -2729,6 +2729,7 @@ class ApplicationServices:
         session: ConversationSession,
         agent_id: str,
         message_ids: list[str],
+        max_sequence: int,
     ) -> str:
         messages = [self.conversations.get_message(message_id) for message_id in message_ids]
         if len(messages) == 1:
@@ -2748,7 +2749,7 @@ class ApplicationServices:
                 + "\n".join(chunks)
             )
         return self._conversation_prompt(
-            conversation_id, session, agent_id, latest
+            conversation_id, session, agent_id, latest, max_sequence=max_sequence
         )
 
     async def _drain_conversation_agent(self, agent_id: str) -> None:
@@ -2783,7 +2784,7 @@ class ApplicationServices:
             if not claimed:
                 return
             prompt = self._conversation_delivery_prompt(
-                conversation_id, session, agent_id, claimed
+                conversation_id, session, agent_id, claimed, max_sequence
             )
             try:
                 run = await manager.start_run(
@@ -3531,6 +3532,8 @@ class ApplicationServices:
         session: ConversationSession,
         target_agent_id: str,
         latest_message: str,
+        *,
+        max_sequence: int | None = None,
     ) -> str:
         participants = [
             self.world.get_card(agent_id)
@@ -3542,6 +3545,11 @@ class ApplicationServices:
         # older than 40 and peer turns. Plugin continuation remains provider-owned.
         transcript = [] if managed else self.conversations.list_messages(
             conversation_id, session.id, limit=40)
+        if max_sequence is not None:
+            transcript = [
+                item for item in transcript
+                if item.sequence <= max_sequence
+            ]
         lines = "\n".join(
             f"{item.sender_name}: {item.content}" + ''.join(
                 f"\n[Attachment: {file.name}; version_id={file.version_id}; path={file.path}; {file.size_bytes} bytes]"
