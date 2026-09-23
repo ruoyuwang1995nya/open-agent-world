@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath, PurePosixPath
 from typing import TYPE_CHECKING, Any, TypeVar
-from uuid import uuid4, uuid5, NAMESPACE_URL
+from uuid import uuid4
 
 from backend.spatial import Rectangle
 
@@ -21,7 +21,6 @@ if TYPE_CHECKING:
     from backend.canvas_control import CanvasControl, CanvasScope
 
 from backend.agents import (
-    AgentEvent,
     AgentNotFoundError,
     GoogleAdkAgentRuntime,
     RuntimeProvider,
@@ -688,7 +687,9 @@ class ApplicationServices:
                 continue
             with self.database.locked() as db:
                 already_visible = db.execute(
-                    "SELECT 1 FROM conversation_messages WHERE run_id=? AND session_id=? LIMIT 1",
+                    """SELECT 1 FROM conversation_messages
+                    WHERE run_id=? AND session_id=? AND is_final=1
+                    AND (sender_kind='agent' OR kind='run_outcome') LIMIT 1""",
                     (run.run_id, run.context_id),
                 ).fetchone()
             if already_visible is None:
@@ -3389,19 +3390,7 @@ class ApplicationServices:
             manager = self._require_run_manager()
             record = await manager.wait_execution(run_id)
             if record.status not in TERMINAL_RUN_STATUSES:
-                # The provider turn ended without a durable result. Surface the
-                # wait state instead of leaving the transcript stalled, then
-                # keep following the Run until it terminates.
-                suspension = manager.get_suspension(run_id)
-                reason = suspension.reason if suspension is not None else None
-                name = self._conversation_agent_name(agent_id)
-                await self._persist_conversation_outcome_notice(
-                    run_id,
-                    conversation_id,
-                    session_id,
-                    f"{name} paused this response to wait on external work"
-                    + (f" ({reason})." if reason else "."),
-                )
+                # WAITING is live Run state, not durable chat history.
                 record = await manager.wait_terminal(run_id)
             final_text = manager.final_text(run_id)
             if record.status is RunStatus.SUCCEEDED and final_text:
@@ -3480,41 +3469,9 @@ class ApplicationServices:
             sender_name="System",
             content=content,
             run_id=run_id,
+            kind="run_outcome",
         )
         await self._publish_conversation_message(message)
-
-    async def _persist_conversation_provider_event(self, event: AgentEvent, record: RunRecord, conversation_id: str, session_id: str) -> str | None:
-        if not self._can_agent_post_to_conversation_session(record.agent_id, conversation_id, session_id):
-            return None
-        kind = event.type.value
-        if kind == "agent_message":
-            content = event.payload.get("text")
-            if not isinstance(content, str) or not content.strip():
-                return None
-            kind = "text"
-        elif kind in ("tool_started", "tool_completed"):
-            name = str(event.payload.get("name") or "tool")
-            content = ("Using " if kind == "tool_started" else "Finished ") + name
-            # Store only the provider's public tool result/arguments, not runtime credentials or config.
-            detail = event.payload.get("arguments" if kind == "tool_started" else "response")
-            if detail is not None:
-                content += "\n\n" + json.dumps(detail, ensure_ascii=False, indent=2, default=str)
-        else:
-            return None
-        provider_message_id = event.payload.get('provider_message_id') if kind == 'text' else None
-        if isinstance(provider_message_id, str) and provider_message_id:
-            message_id = str(uuid5(NAMESPACE_URL, json.dumps([
-                'oaw:provider-message', conversation_id, session_id, record.run_id, provider_message_id])))
-            message = self.conversations.update_provider_message(conversation_id, session_id,
-                message_id=message_id, run_id=record.run_id, sender_id=record.agent_id,
-                sender_name=self._conversation_agent_name(record.agent_id), content=content)
-        else:
-            message = self.conversations.add_message(conversation_id, session_id,
-                sender_kind="agent", sender_id=record.agent_id,
-                sender_name=self._conversation_agent_name(record.agent_id), content=content,
-                run_id=record.run_id, kind=kind, is_final=False)
-        await self._publish_conversation_message(message)
-        return message.id
 
     def _conversation_final_message(self, conversation_id: str, session_id: str, *, run_id: str,
                                     sender_id: str, sender_name: str, content: str) -> ConversationMessage:
@@ -3970,7 +3927,6 @@ def create_services(
         plugins=plugin_registry,
         capability_provider=provider,
         state=state,
-        persist_provider_event=services._persist_conversation_provider_event,
         cleanup_execution=services.sandbox_operations.cancel_run,
         default_runtime_provider_id=(
             default_runtime_provider_id
