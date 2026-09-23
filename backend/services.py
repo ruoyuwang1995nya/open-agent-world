@@ -516,7 +516,6 @@ class _TemplateRestoreResources:
 @dataclass(frozen=True, slots=True)
 class _LifecycleConversations:
     conversations: ConversationStore
-    deliveries: ConversationDeliveryStore
     state: StateStore
 
     def create_initial_session(self, node_id: str, title: str) -> None:
@@ -540,6 +539,7 @@ class ApplicationServices:
     events: EventHub
     plugins: PluginRegistry
     conversations: ConversationStore
+    deliveries: ConversationDeliveryStore
     state: StateStore
     contexts: ContextStore
     legions: LegionStore
