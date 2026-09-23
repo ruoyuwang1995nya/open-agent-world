@@ -121,6 +121,7 @@ export function activeConversationRuns(
     if (type === "run_started" || type === "run_resumed" || type === "run_created") current.status = "running";
     if (type === "agent_message" && typeof event.payload.text === "string") {
       current.live_text = event.payload.text;
+      current.progress = undefined;
     } else if (type === "agent_progress" && typeof event.payload.text === "string") {
       current.progress = event.payload.text;
     } else if (type === "tool_started") {
