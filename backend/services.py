@@ -2732,8 +2732,8 @@ class ApplicationServices:
             message_id=str(request.message_id) if request.message_id else None,
             mention_agent_ids=mentions,
             attachments=attachments,
+            delivery_agent_ids=mentions,
         )
-        self.deliveries.enqueue(conversation_id, session_id, message.id, mentions)
         await self._publish_conversation_message(message)
 
         for agent_id in mentions:
