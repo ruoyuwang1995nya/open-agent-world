@@ -398,10 +398,10 @@ export interface ConversationRunSummary {
   run_id: string;
   agent_id: string;
   status: string;
-  started_at?: string;
-  finished_at?: string;
-  awaiting?: string;
-  progress?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  awaiting?: string | null;
+  progress?: string | null;
   tool_count: number;
   tool_trace: ConversationToolTrace[];
   live_text?: string;
@@ -411,7 +411,7 @@ export interface ConversationDeliveryState {
   message_id: string;
   agent_id: string;
   status: "queued" | "claimed";
-  claimed_run_id?: string;
+  claimed_run_id?: string | null;
 }
 
 export interface ConversationMessagePage {
