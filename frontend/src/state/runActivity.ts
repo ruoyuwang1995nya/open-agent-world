@@ -112,3 +112,20 @@ export function toolFailed(item: RunActivityItem): boolean {
   return item.success === false || Boolean(item.error) || Boolean(response.error) ||
     (typeof exitCode === "number" && exitCode !== 0) || response.status === "failed";
 }
+
+/** The durable reply owns the final text; keep the live cache untouched.
+ * Match only the last assistant row, not earlier commentary or tool output. */
+export function withoutFinalReply(
+  activity: RunActivityState | undefined,
+  finalReply?: string,
+): RunActivityState | undefined {
+  const finalText = finalReply?.trim();
+  if (!activity || !finalText) return activity;
+  for (let index = activity.items.length - 1; index >= 0; index -= 1) {
+    const item = activity.items[index];
+    if (item.type !== "agent_message") continue;
+    if (item.text?.trim() !== finalText) return activity;
+    return { ...activity, items: activity.items.filter((_, i) => i !== index) };
+  }
+  return activity;
+}

@@ -2,7 +2,7 @@ import { memo, useState } from "react";
 import { Check, ChevronRight, CircleAlert, LoaderCircle, Square } from "lucide-react";
 import { t, useLocale } from "../i18n";
 import type { ConversationRunSummary } from "../types/world";
-import { toolFailed, type RunActivityItem, type RunActivityState } from "../state/runActivity";
+import { toolFailed, withoutFinalReply, type RunActivityItem, type RunActivityState } from "../state/runActivity";
 import { MarkdownMessage } from "./MarkdownMessage";
 
 function format(value: unknown): string {
@@ -79,18 +79,24 @@ export function RunActivityStream({ activity, active = false, waiting = false, s
   </div>;
 }
 
-export function RunActivityDetails({ run, activity }: { run?: ConversationRunSummary; activity?: RunActivityState }) {
+export function RunActivityDetails({ run, activity, finalReply }: {
+  run?: ConversationRunSummary;
+  activity?: RunActivityState;
+  finalReply?: string;
+}) {
   useLocale();
   const [open, setOpen] = useState(false);
+  const detailsActivity = withoutFinalReply(activity, finalReply);
   const count = run?.tool_count ?? activity?.items.filter(item => item.type.startsWith("tool_")).length ?? 0;
   const seconds = run?.started_at && run.finished_at
     ? Math.max(0, Math.round((Date.parse(run.finished_at) - Date.parse(run.started_at)) / 1000)) : undefined;
+  if (detailsActivity && !detailsActivity.items.length && !detailsActivity.truncated && !count) return null;
   return <details className="run-activity-history" open={open} onToggle={event => {
     // Ignore toggle events from nested tool disclosures.
     if (event.target === event.currentTarget) setOpen(event.currentTarget.open);
   }}>
     <summary>{seconds === undefined ? t("Execution details") : t("Worked for {v0}s", { v0: seconds })}
       {count ? ` · ${count} ${t("tool calls")}` : ""}</summary>
-    {open ? <RunActivityStream activity={activity} /> : null}
+    {open ? <RunActivityStream activity={detailsActivity} /> : null}
   </details>;
 }

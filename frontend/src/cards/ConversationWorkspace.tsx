@@ -529,12 +529,14 @@ export function ConversationWorkspace({ card }: { card: WorldCard }) {
           {messages.map((message) => (
             <article className={`workspace-message is-${message.sender_kind}`} key={message.id} data-message-id={message.id}>
               <span>{message.sender_kind === "agent" ? <Bot size={13} /> : message.sender_kind === "system" ? <Info size={13} /> : <UserRound size={13} />}</span>
-              <div><strong>{message.sender_name}</strong>{message.kind?.startsWith("tool_")
-                ? <details className="conversation-tool-message"><summary>{message.content.split("\n")[0]}</summary><pre>{message.content.split("\n").slice(1).join("\n").trim() || t("No additional details")}</pre></details>
-                : message.content ? (message.sender_kind === "agent" ? <MarkdownMessage content={message.content} /> : <p>{message.content}</p>) : null}
-                {message.attachments?.length ? <ConversationAttachments conversationId={card.id} sessionId={message.session_id} files={message.attachments} /> : null}
+              <div><strong>{message.sender_name}</strong>
                 {message.run_id && (history.runSummaries[message.run_id] || runActivities.get(message.run_id)?.items.length) ?
-                  <RunActivityDetails run={history.runSummaries[message.run_id]} activity={runActivities.get(message.run_id)} /> : null}
+                  <RunActivityDetails run={history.runSummaries[message.run_id]} activity={runActivities.get(message.run_id)}
+                    finalReply={message.sender_kind === "agent" && message.is_final !== false ? message.content : undefined} /> : null}
+                {message.kind?.startsWith("tool_")
+                  ? <details className="conversation-tool-message"><summary>{message.content.split("\n")[0]}</summary><pre>{message.content.split("\n").slice(1).join("\n").trim() || t("No additional details")}</pre></details>
+                  : message.content ? (message.sender_kind === "agent" ? <MarkdownMessage content={message.content} /> : <p>{message.content}</p>) : null}
+                {message.attachments?.length ? <ConversationAttachments conversationId={card.id} sessionId={message.session_id} files={message.attachments} /> : null}
                 {message.sender_kind === "user" ? (() => {
                   const queued = history.deliveries.filter((delivery) => delivery.message_id === message.id && delivery.status === "queued");
                   if (!queued.length) return null;
