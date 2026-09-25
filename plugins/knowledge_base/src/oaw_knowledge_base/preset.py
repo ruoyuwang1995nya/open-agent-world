@@ -68,17 +68,19 @@ def split(axis, ratio, first, second):
 
 
 def definition():
-    # The conversation is a sidebar; the base takes the room. Left to right, the
-    # columns follow the work: what came in, what it says, what came out of it.
-    layout = {"version": 2, "hidden_sections": [], "root": split("horizontal", .24,
-        split("vertical", .26, pane("conversation", "sessions"),
-              pane("conversation", "conversation")),
-        split("horizontal", .30,
-            split("vertical", .62, pane("knowledge", "sources"), pane("knowledge", "jobs")),
-            split("vertical", .50,
-                tabs(view("knowledge", "markdown"), view("knowledge", "schemas")),
-                tabs(view("knowledge", "projections"), view("knowledge", "review"),
-                     view("knowledge", "graph")))))}
+    # Three columns, left to right: settings, the working tabs, the conversation.
+    # Settings configure the base; the tabs are where the work happens, one
+    # functional panel at a time; the conversation sits beside it to ask about
+    # what is there.
+    layout = {"version": 2, "hidden_sections": [], "root": split("horizontal", .18,
+        pane("knowledge", "settings"),
+        split("horizontal", .62,
+            tabs(view("knowledge", "sources"), view("knowledge", "schemas"),
+                 view("knowledge", "markdown"), view("knowledge", "projections"),
+                 view("knowledge", "review"), view("knowledge", "graph"),
+                 view("knowledge", "jobs")),
+            split("vertical", .26, pane("conversation", "sessions"),
+                  pane("conversation", "conversation"))))}
     nodes = (
         PresetNode(key="group", type="legion", name="Knowledge research", parent_key=None,
                    presentation="preview", config={"mode": "group", "workspace_layout": layout,
