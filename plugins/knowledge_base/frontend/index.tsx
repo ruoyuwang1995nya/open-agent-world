@@ -298,8 +298,15 @@ export function Workspace({ host, card }: PluginViewProps) {
       </span>
       {!!running.length && <span className="knowledge-running" role="status">
         {t("{v0} conversion running", { v0: running.length })}</span>}
-      <details className="knowledge-settings">
-        <summary>{t("Settings")}</summary>
+      <button type="button" disabled={busy} onClick={() => void perform(async () => {
+        setNotice(""); await refresh(); await loadGraph();
+      })}>{t("Refresh")}</button>
+    </header>
+    {error && <p role="alert" className="knowledge-error">{error}</p>}
+    {notice && <p role="status" className="knowledge-notice">{notice}</p>}
+
+    <div className="knowledge-grid">
+      <WorkspaceSection id="settings" title={t("Settings")} className="knowledge-section knowledge-settings-section">
         <label>{t("Collection name")}
           <input value={current.collection_name} disabled={busy}
             onChange={event => setSettings({ ...current, collection_name: event.target.value })}
@@ -318,15 +325,7 @@ export function Workspace({ host, card }: PluginViewProps) {
         </label>
         <small>{t("The MinerU token comes from the OAW_MINERU_TOKEN environment variable, never from this card.")}</small>
         <p>{t("Available engines: {v0}", { v0: (overview?.engines ?? []).join(", ") || "—" })}</p>
-      </details>
-      <button type="button" disabled={busy} onClick={() => void perform(async () => {
-        setNotice(""); await refresh(); await loadGraph();
-      })}>{t("Refresh")}</button>
-    </header>
-    {error && <p role="alert" className="knowledge-error">{error}</p>}
-    {notice && <p role="status" className="knowledge-notice">{notice}</p>}
-
-    <div className="knowledge-grid">
+      </WorkspaceSection>
       <WorkspaceSection id="sources" title={t("Sources")} className="knowledge-section">
         <h3>{t("Sources")}</h3>
         <label className="knowledge-upload">{t("Add a document")}

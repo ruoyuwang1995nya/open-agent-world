@@ -14,12 +14,9 @@
 .knowledge-toolbar > button:last-child { margin-left: auto; }
 .knowledge-counts, .knowledge-meta { color: var(--ink-soft); font-size: 11px; }
 .knowledge-running { color: var(--knowledge-accent); font-size: 11px; }
-.knowledge-settings { font-size: 12px; }
-.knowledge-settings summary { cursor: pointer; color: var(--ink-soft); }
-.knowledge-settings[open] { position: relative; }
-.knowledge-settings[open] > :not(summary) { display: block; }
-.knowledge-settings > label, .knowledge-settings > small, .knowledge-settings > p { margin: 8px 0 0; max-width: 340px; }
-.knowledge-settings small, .knowledge-settings p { color: var(--ink-soft); font-size: 11px; line-height: 1.5; }
+.knowledge-settings-section { font-size: 12px; }
+.knowledge-settings-section > label, .knowledge-settings-section > small, .knowledge-settings-section > p { margin: 8px 0 0; max-width: 340px; }
+.knowledge-settings-section small, .knowledge-settings-section p { color: var(--ink-soft); font-size: 11px; line-height: 1.5; }
 
 .knowledge-error { color: var(--danger); background: var(--danger-soft); border: 1px solid var(--danger); border-radius: 6px; padding: 10px; margin: 0 14px; overflow-wrap: anywhere; }
 .knowledge-notice { color: var(--knowledge-accent); background: #8a6fd112; border: 1px solid #8a6fd140; border-radius: 6px; padding: 10px; margin: 0 14px; }
