@@ -54,14 +54,17 @@ def names(test_client):
     return {item["name"] for item in test_client.get("/v1/collections").json()["collections"]}
 
 
-def ingest(test_client, store, text=DOCUMENT, filename="sintering.md"):
-    response = call(test_client, "ingest", filename=filename,
+def ingest(test_client, store, text=DOCUMENT, filename="sintering.md", collection="default"):
+    response = call(test_client, "ingest", collection=collection, filename=filename,
                     content_base64=base64.b64encode(text.encode()).decode(),
                     media_type="text/markdown")
     assert response.status_code == 200, response.text
-    job = store.open().jobs.wait(response.json()["job"]["id"], timeout=60)
+    source_id = response.json()["source"]["id"]
+    processed = call(test_client, "process", collection=collection, source_ids=[source_id])
+    assert processed.status_code == 200, processed.text
+    job = store.open().jobs.wait(processed.json()["jobs"][0]["job"]["id"], timeout=60)
     assert job.status == "COMPLETED", job.error
-    return response.json()["source"]["id"]
+    return source_id
 
 
 def test_health_is_open_but_everything_else_needs_the_token(store):
@@ -171,7 +174,9 @@ def test_collections_stay_separate_in_one_store(client, store):
                                  "content_base64": base64.b64encode(b"# B\n\ntext").decode(),
                                  "media_type": "text/markdown"})
     assert response.status_code == 200
-    store.open().jobs.wait(response.json()["job"]["id"], timeout=60)
+    processed = client.post("/v1/collections/other/process",
+                            json={"source_ids": [response.json()["source"]["id"]]})
+    store.open().jobs.wait(processed.json()["jobs"][0]["job"]["id"], timeout=60)
 
     assert [item["filename"] for item in call(client, "sources").json()["sources"]] == ["a.md"]
     assert [item["filename"] for item in

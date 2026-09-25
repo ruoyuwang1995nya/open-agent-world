@@ -47,41 +47,53 @@ The standalone service reads the same variable from its own environment.
 The card is most useful with someone to ask about it. The plugin registers a Legion
 preset, **Knowledge research**, in the Legion deck: deploying it places a knowledge
 base, a **Librarian** Agent and a Conversation, already wired and already laid out —
-the conversation as a narrow sidebar, then Sources over Jobs, then markdown and
-schemas over projections, review and the graph.
+the conversation as a narrow sidebar, then Sources (uploads and conversion jobs
+together), then markdown and schemas over projections, review and the graph.
 
-**You drive the pipeline; the Librarian only reads.** Uploading a PDF, running a
-projection, building a draft and approving it are buttons in the workspace, in that
-order. The Librarian holds **Knowledge read** and nothing else: it can tell you what
-the base contains, read a converted document back to you and query the published
-graph, but it cannot ingest, project, draft or approve. Nothing enters the graph
-except by your click.
+**You drive the pipeline; the Librarian only reads.** Uploading a file, converting
+it, running a projection, building a draft and approving it are buttons in the
+workspace, in that order. The Librarian holds **Knowledge read** and nothing else: it
+can tell you what the base contains, read a converted document back to you and query
+the published graph, but it cannot ingest, convert, project, draft or approve.
+Nothing enters the graph except by your click.
 
 Saving your own knowledge Legion works too, but note what a copy is: the node type is
 templateable while the database is not captured, so **a deployed copy is an empty
-knowledge base** with the same name and wiring — no sources, no facts, and settings
-back at their defaults. This is the same promise the card's deletion warning makes.
+knowledge base** with the same name and wiring — no sources, no groups, no facts, and
+settings back at their defaults. This is the same promise the card's deletion warning
+makes.
 
 ## Using the card
 
 Open the **Knowledge base** pack in the card library, place a card, then open its
 workspace.
 
-1. **Sources** — add a PDF, markdown, text, CSV or JSON file up to 32 MiB.
-   Conversion runs in the background on the card's own job thread, so the canvas
-   stays responsive; the **Jobs** section shows progress and any failure.
+1. **Sources** — organize documents into **groups** (create, rename or delete one
+   from the group selector in the toolbar), then add PDF, markdown, text, CSV or JSON
+   files up to 32 MiB each. Uploading never converts a file on its own: select one or
+   more sources and press **Process** — alone or in a batch — to queue their markdown
+   conversion. The conversion jobs and their progress or failures live in this same
+   section, right below the source list, not in a tab of their own.
 2. **Markdown** — select a source to read the extracted markdown, choose a schema
    and a model, and **Project to JSON**.
 3. **Schemas** — a schema is a JSON Schema object plus the system prompt used to
    extract it. Reuse one before creating a near-duplicate.
 4. **Projections** — structured extractions, each linked by evidence back to the
-   markdown artifact and the original file. Select one or more and **Build draft**.
+   markdown artifact and the original file. Select one or more from the **same
+   group** and **Build draft**.
 5. **Review** — read the proposed graph, then submit, reject, or approve.
    Approving asks for an explicit confirmation and is the **only** thing that
    writes the knowledge graph.
 6. **Graph** — the published graph, drawn as a map: click an entity to read its
    type and properties beside it, double-click to traverse outward from it. The
    name filter and the entity list stay beside the map.
+
+The group selector in the toolbar narrows every section — sources, markdown,
+projections, drafts and the graph — to one group at a time, or shows everything
+across every group. A source belongs to exactly one group for its whole life;
+markdown, projections, drafts and the entities and relations a draft publishes all
+trace back to the group their source came from, so a knowledge base with several
+document sets stays as easy to browse group by group as it is to see as a whole.
 
 Model output is never presented as fact. A projection and a draft are candidates;
 a published fact revision is what an approval produces, and every published entity
@@ -104,6 +116,33 @@ Outside OAW, `kb project` is the third caller of that same prompt builder, using
 model from your own shell (`KB_MODEL_BASE_URL`, `KB_MODEL_API_KEY`, `KB_MODEL`).
 The standalone service never holds model credentials and never calls a provider.
 
+## Deploying it as a locked application
+
+The card declares a `NodeDeploymentDefinition` (Plugin API 1.21+, see
+[plugin deployment](../../docs/plugin-deployment.md)), so a saved Knowledge research
+Legion can be [published](../../docs/deployment.md) as a locked, password-protected
+application the same way a Conversation or a Text card can. Every business action a
+person uses to drive the pipeline publishes: upload, convert (alone or batched),
+organize sources into groups, project, build a draft, and submit, reject or approve
+it — approving is still the only thing that writes the graph. The **Settings**
+section never publishes: the collection name, PDF engine and MinerU URL stay
+engineering-only and the section does not even mount in a deployed release,
+regardless of whether its pane stays visible in the published layout.
+
+A deployment mounts no live model picker (`docs/deployment.md`: "it does not mount
+... model settings"), so **Project to JSON** there always uses one model chosen
+ahead of time: set **Default model for deployment** in the engineering Settings
+section before publishing. `POST /api/knowledge/{card_id}/project` is an
+engineering-only route; a deployment reaches the same underlying call through
+`POST /api/runtime-app/workspace/knowledge/{card_id}/project` instead, gated on the
+release granting both halves of the pipeline it drives (`projection_prompt` and
+`save_projection`).
+
+See [`examples/knowledge-legion-deploy`](../../examples/knowledge-legion-deploy/README.md)
+for a runnable end-to-end example — it also automates the one extra setup step this
+plugin needs (installing `mat-know-base` and `pymupdf4llm` into `backend/.venv`)
+before publishing and serving a release.
+
 ## Running it without OAW
 
 The pipeline does not import OAW at all — only `plugin.py` and `lifecycle.py` do,
@@ -117,13 +156,19 @@ python -m venv .venv && .venv/bin/pip install -e plugins/knowledge_base[service]
 
 A **store** is a directory holding one `knowledge.db` plus a small settings file;
 it defaults to `$KB_SERVICE_STORE`, else `~/.local/share/oaw-knowledge`. One store
-can hold many **collections**, named per call (`--collection`, or the URL path).
+can hold many **collections**, named per call (`--collection`, or the URL path) —
+this is the same unit the OAW card calls a collection, and each one can in turn hold
+several **groups** (`kb groups`), the same source-organizing unit the card's group
+selector manages. A file belongs to exactly one group; a fresh collection starts
+with a single unnamed default group, so nothing about groups is required to use
+the store the way earlier versions did.
 
 The whole loop in a terminal, no browser and no backend:
 
 ```sh
 export KB_SERVICE_STORE=~/kb
-kb ingest paper.pdf                       # uploads and waits for the conversion
+kb ingest paper.pdf                       # uploads it; conversion is a separate step
+kb process                                # converts every unconverted source, in a batch
 kb sources                                # source id, record id, engine used
 kb schema add --file process-schema.json  # name, definition, system_prompt
 kb project --schema SCHEMA_ID --source SOURCE_ID   # your model, your credentials
@@ -133,8 +178,14 @@ kb approve DRAFT_ID --revision 1          # the only command that writes the gra
 kb graph
 ```
 
+`kb ingest` also accepts several files at once and, in process, waits for their
+batch conversion the same way it always waited for one — pass `--group GROUP_ID`
+to file them into a named group instead of the default one, and `kb groups create
+--name Alloys` to make one first.
+
 `kb tools` prints the agent manifest; `kb --help` lists the rest (`jobs --watch`,
-`markdown --out`, `prompt`, `save-projection`, `projections`, `settings`).
+`markdown --out`, `prompt`, `save-projection`, `projections`, `settings`, `groups`,
+`process`).
 
 ### As a service
 
@@ -200,10 +251,14 @@ conversion, create/delete) is covered by
 | Knowledge read | `knowledge_overview`, `knowledge_sources`, `knowledge_markdown`, `knowledge_schemas`, `knowledge_projections`, `knowledge_graph`, `knowledge_jobs` |
 | Knowledge extract | Read tools plus `knowledge_projection_prompt`, `knowledge_save_projection`, `knowledge_draft` |
 
-Uploading raw data (`ingest`), changing card settings (`settings`) and reviewing a
-draft (`review`) have **no capability kind at all**, so no relationship can reach
-them and no Agent can call them. Publishing a fact stays a human act performed on
-the canvas. Agents cannot pass desktop confirmation arguments.
+Uploading raw data (`ingest`), converting it (`process`), managing groups
+(`groups`), changing card settings (`settings`) and reviewing a draft (`review`)
+have **no capability kind at all**, so no relationship can reach them and no Agent
+can call them. Publishing a fact stays a human act performed on the canvas. Agents
+cannot pass desktop confirmation arguments. `knowledge_overview` still reports every
+group by name and count, and every read tool accepts an optional `group_id` to
+narrow its answer to one group, so the Librarian can talk about how the base is
+organized without being able to reorganize it.
 
 ## Persistence and failure behavior
 
@@ -212,13 +267,20 @@ artifacts, records, schemas, projections, evidence, drafts, review decisions,
 fact revisions, the integration outbox and the knowledge graph itself all live in
 that one file — the graph in plugin-owned `oaw_kg_entity` / `oaw_kg_relation`
 tables, so it survives a restart. The file uses WAL and a 30-second busy timeout
-because the job thread and resource actions write concurrently.
+because the job thread and resource actions write concurrently. Groups are plain
+MKB collections in the same file, so they persist and restart exactly the same way;
+opening an older `knowledge.db` for the first time after upgrading adds the
+`group_id` column those two tables need automatically, leaving every existing fact
+in place (tagged to no group until the next approval touches it).
 
 Deleting a card permanently removes `knowledge.db` and its WAL/SHM companions
 through OAW's journaled lifecycle finalizer. Canvas undo, copy/paste and Legion
 templates do not snapshot the file. Back up the profile while OAW is closed.
 
 Uploads are capped at 32 MiB and results at 1 MiB, so long documents page through
-`offset`/`limit` rather than arriving whole. A conversion that no engine can
-handle fails the job with the engine named, leaving the source in place to retry
-after installing the engine. Interrupted jobs are recovered when the card reopens.
+`offset`/`limit` rather than arriving whole. Uploading a file only stores it —
+processing is a separate, explicit batch step, alone or with others, so a large
+drop of files never floods the job thread on its own. A conversion that no engine
+can handle fails the job with the engine named, leaving the source in place to
+retry after installing the engine. Interrupted jobs are recovered when the card
+reopens.

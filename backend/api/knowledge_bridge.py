@@ -7,6 +7,10 @@ action, so the projection is validated and evidence-linked by the plugin as usua
 
 The prompt itself is built by the plugin (``oaw_knowledge_base.projection``), which is
 also what ``kb project`` uses outside OAW, so the two paths cannot drift.
+
+``run_projection`` is the reusable core: the engineering route below and the
+deployment route in ``backend/deployment_workspace.py`` both call it, so a published
+release runs the exact same model call the engineering canvas does.
 """
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -56,8 +60,7 @@ def _credentials(services, reference):
     return base_url, api_key, model.removeprefix("openai/")
 
 
-@router.post("/knowledge/{node_id}/project")
-async def project(node_id: str, request: ProjectionRequest, services=Depends(get_services)):
+async def run_projection(node_id: str, request: ProjectionRequest, services) -> dict:
     async with services._node_mutation(read_only=True):
         if services.world.get_card(node_id).type != NODE_TYPE:
             raise HTTPException(422, "Expected a Knowledge base node")
@@ -91,3 +94,8 @@ async def project(node_id: str, request: ProjectionRequest, services=Depends(get
             "data": data, "notes": request.notes, "model": request.model}))
     return {"projection": saved["projection"], "truncated": prompt["truncated"],
             "record_id": prompt["record_id"]}
+
+
+@router.post("/knowledge/{node_id}/project")
+async def project(node_id: str, request: ProjectionRequest, services=Depends(get_services)):
+    return await run_projection(node_id, request, services)

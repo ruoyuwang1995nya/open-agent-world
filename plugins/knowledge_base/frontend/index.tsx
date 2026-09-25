@@ -3,13 +3,16 @@ import type { FrontendPlugin, PluginViewProps } from "@oaw/plugin-api";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useWorldStore } from "../../../frontend/src/state/worldStore";
 import { availableModels } from "../../../frontend/src/state/modelConnections";
+import { deploymentApiBase } from "../../../frontend/src/deployment/api";
 import { GraphMap } from "./GraphMap";
 import "./style.css";
 
 type Settings = { collection_name: string; pdf_engine: string; mineru_base_url: string };
-type Overview = { collection: { id: string; name: string }; settings: Settings; engines: string[];
-  counts: Record<string, number>; active_jobs: number };
+type Group = { id: string; name: string; source_count: number; created_at: string; is_default: boolean };
+type Overview = { collection: { id: string; name: string }; groups: Group[]; settings: Settings;
+  engines: string[]; counts: Record<string, number>; active_jobs: number };
 type Source = { id: string; filename: string; media_type: string; size: number; created_at: string;
+  group_id: string | null; group_name: string | null;
   markdown: { artifact_id: string; size: number; engine: string | null } | null;
   record_id: string | null; projections: number };
 type Extracted = { record_id: string; filename: string | null; engine: string | null;
@@ -29,7 +32,8 @@ type Entity = { id: string; type: string; name: string; properties: Record<strin
 type Relation = { id: string; type: string; source_id: string; target_id: string };
 type Graph = { entities: Entity[]; relations: Relation[]; truncated: boolean };
 type Job = { id: string; kind: string; status: string; progress: number | null; message: string | null;
-  error: string | null; source_id: string | null; created_at: string; completed_at: string | null };
+  error: string | null; source_id: string | null; group_id: string | null; created_at: string;
+  completed_at: string | null };
 type JobEvent = { event: string; step: string | null; message: string | null; level: string | null;
   occurred_at: string };
 /** An approval the card asked the person to confirm before it publishes a fact. */
@@ -48,9 +52,12 @@ const fileBase64 = (file: File) => new Promise<string>((resolve, reject) => {
   reader.readAsDataURL(file);
 });
 
-/** The projection call needs a model, so it goes through the host bridge, not the plugin. */
-async function request(path: string, body: unknown) {
-  const response = await fetch(`/api/${path}`, {
+/** The projection call needs a model, so it goes through the host bridge, not the
+ * plugin. The engineering bridge lives at ``/api/...``; a deployment mounts the same
+ * bridge scoped under the runtime workspace instead, gated by the release's grants. */
+async function request(path: string, body: unknown, deployed: boolean) {
+  const base = deployed ? `${deploymentApiBase}/runtime-app/workspace` : deploymentApiBase;
+  const response = await fetch(`${base}/${path}`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : t("The projection request failed"));
@@ -90,6 +97,13 @@ export function Workspace({ host, card }: PluginViewProps) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [graph, setGraph] = useState<Graph>();
 
+  // "" means every group; otherwise the id every list is narrowed to, so sources,
+  // markdown, projections, drafts and the graph all stay scoped to one group at a time.
+  const [activeGroup, setActiveGroup] = useState("");
+  const [groupName, setGroupName] = useState("");
+  const [groupEditing, setGroupEditing] = useState(false);
+  const [selectedSources, setSelectedSources] = useState<string[]>([]);
+
   const [selectedSource, setSelectedSource] = useState("");
   const [extracted, setExtracted] = useState<Extracted>();
   const [documentError, setDocumentError] = useState("");
@@ -110,22 +124,37 @@ export function Workspace({ host, card }: PluginViewProps) {
 
   const generation = useRef(0);
   const documentSequence = useRef(0);
+  // A deployment mounts no model settings and no live picker, so projection there
+  // always uses whichever model was chosen ahead of time in the engineering Settings
+  // section — never a value the deployed viewer can change.
+  const deployed = !!host.deployment;
+  const defaultModel = (card.config?.default_model as string | undefined) ?? "";
   const catalog = useWorldStore(state => state.modelCatalog);
   const legacyModels = useWorldStore(state => state.modelSettings.models);
   const models = catalog.revision > 0
     ? availableModels({ ...catalog, connections: catalog.connections.filter(c => c.adapter === "openai" || c.adapter === "legacy") })
     : legacyModels.map(value => ({ value, label: value }));
   const [model, setModel] = useState("");
-  const selectedModel = models.some(item => item.value === model) ? model : (models[0]?.value ?? "");
+  const selectedModel = deployed ? defaultModel
+    : models.some(item => item.value === model) ? model : (models[0]?.value ?? "");
 
   const call = useCallback((action: string, args: Record<string, unknown> = {}, confirm?: boolean) =>
     host.resourceAction(action, args, confirm), [host]);
 
+  // "" (All groups) asks for the merged, cross-group view; a chosen group narrows
+  // every list to it. Graph and jobs already treat an omitted group_id as "all".
+  const groupArgs = useCallback((): Record<string, unknown> =>
+    activeGroup ? { group_id: activeGroup } : { all_groups: true }, [activeGroup]);
+  const groupFilter = useCallback((): Record<string, unknown> =>
+    activeGroup ? { group_id: activeGroup } : {}, [activeGroup]);
+
   const refresh = useCallback(async () => {
     const current = generation.current;
     const [summary, sourceList, schemaList, projectionList, draftList, jobList] = await Promise.all([
-      call("overview"), call("sources", { limit: 100 }), call("schemas", { operation: "list" }),
-      call("projections", { limit: 100 }), call("draft", { operation: "list" }), call("jobs", { limit: 20 }),
+      call("overview", groupArgs()), call("sources", { limit: 100, ...groupArgs() }),
+      call("schemas", { operation: "list" }),
+      call("projections", { limit: 100, ...groupArgs() }),
+      call("draft", { operation: "list", ...groupArgs() }), call("jobs", { limit: 20, ...groupFilter() }),
     ]);
     if (generation.current !== current) return;
     setOverview(summary as Overview);
@@ -135,13 +164,13 @@ export function Workspace({ host, card }: PluginViewProps) {
     setProjections((projectionList.projections as Projection[]) ?? []);
     setDrafts((draftList.drafts as DraftItem[]) ?? []);
     setJobs((jobList.jobs as Job[]) ?? []);
-  }, [call]);
+  }, [call, groupArgs, groupFilter]);
 
   const loadGraph = useCallback(async (args: Record<string, unknown> = {}) => {
     const current = generation.current;
-    const result = await call("graph", args) as Graph;
+    const result = await call("graph", { ...groupFilter(), ...args }) as Graph;
     if (generation.current === current) setGraph(result);
-  }, [call]);
+  }, [call, groupFilter]);
 
   const perform = useCallback(async (work: () => Promise<void>) => {
     const current = generation.current;
@@ -178,11 +207,60 @@ export function Workspace({ host, card }: PluginViewProps) {
     }).catch(reason => { if (sequence === documentSequence.current) setDocumentError(message(reason)); });
   }, [call, selectedSource]);
 
-  const upload = (file: File) => perform(async () => {
-    const content = await fileBase64(file);
-    await call("ingest", { filename: file.name, content_base64: content,
-      media_type: file.type || "application/octet-stream" });
-    setNotice(t("Converting {v0} to markdown…", { v0: file.name }));
+  const upload = (files: FileList | File[]) => perform(async () => {
+    const list = Array.from(files);
+    if (!list.length) return;
+    for (const file of list) {
+      const content = await fileBase64(file);
+      await call("ingest", { filename: file.name, content_base64: content,
+        media_type: file.type || "application/octet-stream",
+        ...(activeGroup ? { group_id: activeGroup } : {}) });
+    }
+    setNotice(list.length === 1
+      ? t("{v0} uploaded. Select it below and press Process to convert it to markdown.", { v0: list[0].name })
+      : t("{v0} files uploaded. Select them below and press Process to convert them in a batch.", { v0: list.length }));
+    await refresh();
+  });
+
+  const processSources = (sourceIds: string[]) => perform(async () => {
+    if (!sourceIds.length) return;
+    const result = await call("process", { source_ids: sourceIds });
+    const outcomes = result.jobs as { job?: { id: string } }[];
+    const queued = outcomes.filter(item => item.job).length;
+    setNotice(queued
+      ? t("Converting {v0} of {v1} selected source(s)…", { v0: queued, v1: outcomes.length })
+      : t("Nothing to convert: already converted or already running"));
+    setSelectedSources([]);
+    await refresh();
+  });
+
+  const processPending = () => perform(async () => {
+    const result = await call("process", groupFilter());
+    const outcomes = result.jobs as unknown[];
+    setNotice(outcomes.length
+      ? t("Converting {v0} pending source(s)…", { v0: outcomes.length })
+      : t("Nothing pending to convert"));
+    await refresh();
+  });
+
+  const createGroup = () => perform(async () => {
+    if (!groupName.trim()) throw new Error(t("Name the group first"));
+    const result = await call("groups", { operation: "create", name: groupName.trim() });
+    setActiveGroup((result.group as Group).id);
+    setGroupName(""); setGroupEditing(false);
+    await refresh();
+  });
+
+  const renameGroup = () => activeGroup && perform(async () => {
+    if (!groupName.trim()) throw new Error(t("Name the group first"));
+    await call("groups", { operation: "rename", group_id: activeGroup, name: groupName.trim() });
+    setGroupName(""); setGroupEditing(false);
+    await refresh();
+  });
+
+  const deleteGroup = () => activeGroup && perform(async () => {
+    await call("groups", { operation: "delete", group_id: activeGroup });
+    setActiveGroup("");
     await refresh();
   });
 
@@ -194,9 +272,11 @@ export function Workspace({ host, card }: PluginViewProps) {
 
   const project = () => extracted && perform(async () => {
     if (!schemaId) throw new Error(t("Choose an extraction schema first"));
-    if (!selectedModel) throw new Error(t("Configure a model connection first"));
+    if (!selectedModel) throw new Error(deployed
+      ? t("This deployment has no default model configured yet")
+      : t("Configure a model connection first"));
     const result = await request(`knowledge/${card.id}/project`, {
-      schema_id: schemaId, model: selectedModel, record_id: extracted.record_id });
+      schema_id: schemaId, model: selectedModel, record_id: extracted.record_id }, deployed);
     const saved = result.projection as { id: string; validation?: { valid?: boolean } };
     setNotice(result.truncated
       ? t("Projected a truncated document; only the first part was sent to the model")
@@ -280,6 +360,12 @@ export function Workspace({ host, card }: PluginViewProps) {
     await refresh();
   });
 
+  // Engineering-only: a deployment has no writable config at all, so this never
+  // runs there — the Settings section that calls it is not even mounted when deployed.
+  const saveDefaultModel = (value: string) => perform(async () => {
+    await host.updateConfig({ default_model: value });
+  });
+
   const counts = overview?.counts ?? {};
   const current = settings ?? { collection_name: "", pdf_engine: "auto", mineru_base_url: "" };
   const markdownInline = sections.isInline("markdown");
@@ -287,10 +373,21 @@ export function Workspace({ host, card }: PluginViewProps) {
   const running = jobs.filter(job => ACTIVE.has(job.status));
   // A search can drop the selected entity; the panel follows what is on the map.
   const selectedEntity = graph?.entities.find(item => item.id === entity);
+  const groups = overview?.groups ?? [];
+  const activeGroupObject = groups.find(item => item.id === activeGroup);
+  const pendingSources = sources.filter(item => !item.markdown);
 
   return <div className="knowledge-app nodrag nowheel" aria-label={t("{v0} knowledge base", { v0: card.name })}>
     <header className="knowledge-toolbar">
       <span className="knowledge-badge">{t("Knowledge base")}</span>
+      <label className="knowledge-groupselect">{t("Group")}
+        <select value={activeGroup} disabled={busy}
+          onChange={event => { setActiveGroup(event.target.value); setGroupEditing(false); }}>
+          <option value="">{t("All groups")}</option>
+          {groups.map(item => <option key={item.id} value={item.id}>
+            {item.name}{item.is_default ? ` (${t("default")})` : ""}</option>)}
+        </select>
+      </label>
       <span className="knowledge-counts">
         {t("{v0} documents · {v1} projections · {v2} facts · {v3} entities", {
           v0: counts.sources ?? 0, v1: counts.projections ?? 0,
@@ -306,7 +403,7 @@ export function Workspace({ host, card }: PluginViewProps) {
     {notice && <p role="status" className="knowledge-notice">{notice}</p>}
 
     <div className="knowledge-grid">
-      <WorkspaceSection id="settings" title={t("Settings")} className="knowledge-section knowledge-settings-section">
+      {!deployed && <WorkspaceSection id="settings" title={t("Settings")} className="knowledge-section knowledge-settings-section">
         <label>{t("Collection name")}
           <input value={current.collection_name} disabled={busy}
             onChange={event => setSettings({ ...current, collection_name: event.target.value })}
@@ -325,29 +422,89 @@ export function Workspace({ host, card }: PluginViewProps) {
         </label>
         <small>{t("The MinerU token comes from the OAW_MINERU_TOKEN environment variable, never from this card.")}</small>
         <p>{t("Available engines: {v0}", { v0: (overview?.engines ?? []).join(", ") || "—" })}</p>
-      </WorkspaceSection>
+        <label>{t("Default model for deployment")}
+          <select value={defaultModel} disabled={busy || !models.length}
+            onChange={event => void saveDefaultModel(event.target.value)}>
+            <option value="">{t("None chosen")}</option>
+            {models.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </select>
+        </label>
+        <small>{t("A published deployment has no live model picker, so Project to JSON there always uses this one.")}</small>
+      </WorkspaceSection>}
       <WorkspaceSection id="sources" title={t("Sources")} className="knowledge-section">
         <h3>{t("Sources")}</h3>
-        <label className="knowledge-upload">{t("Add a document")}
-          <input type="file" disabled={busy} onChange={event => {
-            const file = event.target.files?.[0];
+        <div className="knowledge-groupbar">
+          {!groupEditing ? <div className="knowledge-formbar">
+            <button type="button" disabled={busy} onClick={() => { setGroupName(""); setGroupEditing(true); }}>
+              {t("New group")}</button>
+            {activeGroupObject && <button type="button" disabled={busy}
+              onClick={() => { setGroupName(activeGroupObject.name); setGroupEditing(true); }}>
+              {t("Rename group")}</button>}
+            {activeGroupObject && !activeGroupObject.is_default && <button type="button" disabled={busy}
+              onClick={() => void deleteGroup()}>{t("Delete group")}</button>}
+          </div> : <div className="knowledge-formbar">
+            <input value={groupName} disabled={busy} placeholder={t("Group name")} autoFocus
+              onChange={event => setGroupName(event.target.value)} />
+            <button type="button" className="knowledge-primary" disabled={busy || !groupName.trim()}
+              onClick={() => void (activeGroupObject ? renameGroup() : createGroup())}>
+              {activeGroupObject ? t("Save") : t("Create")}</button>
+            <button type="button" disabled={busy} onClick={() => setGroupEditing(false)}>{t("Cancel")}</button>
+          </div>}
+        </div>
+        <label className="knowledge-upload">{t("Add documents")}
+          <input type="file" multiple disabled={busy} onChange={event => {
+            const files = event.target.files;
             event.target.value = "";
-            if (file) void upload(file);
+            if (files?.length) void upload(files);
           }} />
         </label>
-        <small>{t("PDF, markdown, text, CSV or JSON up to 32 MiB. Conversion runs in the background.")}</small>
+        <small>{t("PDF, markdown, text, CSV or JSON up to 32 MiB each. Uploads stay unconverted until you process them below, alone or in a batch.")}</small>
         {!sources.length && <p className="knowledge-empty">{t("Nothing uploaded yet.")}</p>}
         <ul className="knowledge-list">
-          {sources.map(item => <li key={item.id}>
+          {sources.map(item => <li key={item.id} className="knowledge-checkrow">
+            <label><input type="checkbox" checked={selectedSources.includes(item.id)} disabled={busy}
+              onChange={event => setSelectedSources(event.target.checked
+                ? [...selectedSources, item.id] : selectedSources.filter(value => value !== item.id))} />
+              <span className="knowledge-visually-hidden">{t("Select {v0}", { v0: item.filename })}</span>
+            </label>
             <button type="button" aria-pressed={selectedSource === item.id}
               onClick={() => { setSelectedSource(item.id); setSchemaId(schemaId || schemas[0]?.id || ""); }}>
-              <span>{item.filename}</span>
+              <span>{item.filename}{!activeGroup && item.group_name ? ` · ${item.group_name}` : ""}</span>
               <small>{bytes(item.size)} · {item.markdown
                 ? t("markdown via {v0}", { v0: item.markdown.engine ?? "?" })
                 : t("awaiting conversion")} · {t("{v0} projections", { v0: item.projections })}</small>
             </button>
           </li>)}
         </ul>
+        <div className="knowledge-formbar">
+          <button type="button" className="knowledge-primary" disabled={busy || !selectedSources.length}
+            onClick={() => void processSources(selectedSources)}>
+            {t("Process {v0} selected", { v0: selectedSources.length })}</button>
+          <button type="button" disabled={busy || !pendingSources.length}
+            onClick={() => void processPending()}>
+            {t("Process all pending ({v0})", { v0: pendingSources.length })}</button>
+        </div>
+
+        <h4>{t("Conversion jobs")}</h4>
+        {!jobs.length && <p className="knowledge-empty">{t("No jobs yet.")}</p>}
+        <ul className="knowledge-list">
+          {jobs.map(job => <li key={job.id}>
+            <button type="button" aria-pressed={jobDetail?.job.id === job.id} disabled={busy}
+              onClick={() => void openJob(job.id)}>
+              <span>{shortId(job.id)} · {job.status}</span>
+              <small>{job.error || job.message || job.kind}</small>
+            </button>
+          </li>)}
+        </ul>
+        {jobDetail && <div className="knowledge-detail">
+          <h4>{t("Job {v0}", { v0: shortId(jobDetail.job.id) })}</h4>
+          {jobDetail.job.error && <p role="alert" className="knowledge-error">{jobDetail.job.error}</p>}
+          <ul className="knowledge-events">
+            {jobDetail.events.map((event, index) => <li key={index}>
+              <code>{event.step ?? event.event}</code> {event.message}
+            </li>)}
+          </ul>
+        </div>}
       </WorkspaceSection>
 
       <WorkspaceSection id="markdown" title={t("Markdown")} className={`knowledge-section${markdownInline ? " knowledge-wide" : ""}`}>
@@ -360,12 +517,14 @@ export function Workspace({ host, card }: PluginViewProps) {
                 {schemas.map(item => <option key={item.id} value={item.id}>{item.name} v{item.version}</option>)}
               </select>
             </label>
-            <label>{t("Model")}
-              <select value={selectedModel} disabled={busy || !models.length} onChange={event => setModel(event.target.value)}>
-                {!models.length && <option value="">{t("No model configured")}</option>}
-                {models.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </select>
-            </label>
+            {deployed
+              ? <p className="knowledge-meta">{t("Model: {v0}", { v0: defaultModel || t("none configured") })}</p>
+              : <label>{t("Model")}
+                  <select value={selectedModel} disabled={busy || !models.length} onChange={event => setModel(event.target.value)}>
+                    {!models.length && <option value="">{t("No model configured")}</option>}
+                    {models.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </select>
+                </label>}
             <button type="button" className="knowledge-primary" disabled={busy || !extracted || !schemaId || !selectedModel}
               onClick={() => void project()}>{busy ? t("Working…") : t("Project to JSON")}</button>
           </div>
@@ -523,29 +682,6 @@ export function Workspace({ host, card }: PluginViewProps) {
             </div>
           </div>
         </>}
-      </WorkspaceSection>
-
-      <WorkspaceSection id="jobs" title={t("Jobs")} className="knowledge-section">
-        <h3>{t("Conversion jobs")}</h3>
-        {!jobs.length && <p className="knowledge-empty">{t("No jobs yet.")}</p>}
-        <ul className="knowledge-list">
-          {jobs.map(job => <li key={job.id}>
-            <button type="button" aria-pressed={jobDetail?.job.id === job.id} disabled={busy}
-              onClick={() => void openJob(job.id)}>
-              <span>{shortId(job.id)} · {job.status}</span>
-              <small>{job.error || job.message || job.kind}</small>
-            </button>
-          </li>)}
-        </ul>
-        {jobDetail && <div className="knowledge-detail">
-          <h4>{t("Job {v0}", { v0: shortId(jobDetail.job.id) })}</h4>
-          {jobDetail.job.error && <p role="alert" className="knowledge-error">{jobDetail.job.error}</p>}
-          <ul className="knowledge-events">
-            {jobDetail.events.map((event, index) => <li key={index}>
-              <code>{event.step ?? event.event}</code> {event.message}
-            </li>)}
-          </ul>
-        </div>}
       </WorkspaceSection>
     </div>
   </div>;

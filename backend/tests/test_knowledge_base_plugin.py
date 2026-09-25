@@ -35,9 +35,10 @@ from oaw_knowledge_base.errors import KnowledgeError  # noqa: E402
 from oaw_knowledge_base.operations import EXTRACT_ACTIONS, OPERATIONS, READ_ACTIONS  # noqa: E402
 
 NODE_TYPE = "knowledge.base"
-# Uploading a file, changing settings and approving a draft are acts a person takes
-# on the canvas. They must never gain a capability kind, on any transport.
-DESKTOP_ONLY = {"ingest", "settings", "review"}
+# Uploading a file, converting it, managing groups, changing settings and approving a
+# draft are acts a person takes on the canvas. They must never gain a capability kind,
+# on any transport.
+DESKTOP_ONLY = {"ingest", "process", "groups", "settings", "review"}
 
 
 @pytest.fixture
@@ -214,3 +215,51 @@ def test_a_saved_knowledge_legion_deploys_an_empty_working_base(client):
     layout = json.dumps(group["config"]["workspace_layout"])
     assert copied["id"] in layout
     assert not any(node_id in layout for node_id in keys.values())
+
+
+def test_the_research_formation_publishes_and_serves_as_a_deployment(data_root):
+    """The whole "deploy mode" loop: publish, copy, serve, and drive the pipeline
+    from the locked runtime — settings stay out, everything else stays in."""
+    from backend.config import Settings as ConfigSettings
+    from backend.deploy import create_deployment
+
+    with TestClient(create_app(ConfigSettings.for_data_root(data_root)),
+                    client=("127.0.0.1", 50000)) as engineering:
+        deployed = engineering.post(f"/api/legions/presets/{PRESET}/instances", json={}).json()
+        keys = deployed["node_ids"]
+        resource(engineering, keys["knowledge"], "ingest", filename="note.md", media_type="text/markdown",
+                content_base64=base64.b64encode(b"# Note\n\nSome text.").decode())
+        release = engineering.post("/api/deployments",
+                                   json={"legion_id": keys["group"], "name": "Knowledge demo"})
+        assert release.status_code == 201, release.text
+        release_id = release.json()["id"]
+
+    runtime_root = data_root.with_name(data_root.name + "-runtime")
+    create_deployment(data_root, runtime_root, release_id, password="a-fine-long-password")
+    manifest = json.loads((runtime_root / "deployment.json").read_text("utf-8"))
+    assert set(manifest["permissions"][keys["knowledge"]]) == {
+        "settings", "sources", "schemas", "markdown", "projections", "review", "graph"}
+    access = manifest["plugin_access"][keys["knowledge"]]
+    # Settings never appears among the granted resource actions, so a business
+    # release can never rewrite the collection name, PDF engine or MinerU URL,
+    # regardless of whether its pane stays visible in the published layout.
+    assert "settings" not in access["resource_actions"]
+    assert access["config_fields"] == ["default_model"]
+
+    with TestClient(create_app(ConfigSettings.for_data_root(runtime_root)),
+                    client=("127.0.0.1", 50000)) as deployed_client:
+        login = deployed_client.post("/api/deployment/session", json={"password": "a-fine-long-password"})
+        assert login.status_code == 200, login.text
+        node_url = f"/api/runtime-app/workspace/nodes/{keys['knowledge']}/resource/"
+
+        sources = deployed_client.post(node_url + "sources", json={"arguments": {}})
+        assert sources.status_code == 200, sources.text
+        assert sources.json()["sources"][0]["filename"] == "note.md"
+
+        blocked = deployed_client.post(node_url + "settings", json={"arguments": {}})
+        assert blocked.status_code == 404, blocked.text
+
+        # Bootstrap projects only the declared config field, never the internal database.
+        bootstrap = deployed_client.get("/api/runtime-app").json()
+        card = next(item for item in bootstrap["cards"] if item["id"] == keys["knowledge"])
+        assert card["config"] == {"default_model": ""}

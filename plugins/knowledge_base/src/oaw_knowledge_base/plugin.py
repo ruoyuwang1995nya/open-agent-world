@@ -10,8 +10,9 @@ from importlib.resources import files
 from typing import Literal
 
 from open_agent_world.plugin_api import (
-    CapabilityDefinition, CapabilityGrantDefinition, NodeResourceAction,
-    NodeTypeDefinition, PackDefinition, PluginAsset, PluginDescriptor, RelationshipDefinition,
+    CapabilityDefinition, CapabilityGrantDefinition, DeploymentSurface, NodeDeploymentDefinition,
+    NodeResourceAction, NodeTypeDefinition, PackDefinition, PluginAsset, PluginDescriptor,
+    RelationshipDefinition,
 )
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,6 +22,66 @@ from .operations import EXTRACT_ACTIONS, OPERATIONS, READ_ACTIONS
 from .preset import definition as research_preset
 
 PREFIX = "knowledge.base"
+
+# Deployment cannot expose a live model picker — "it does not mount ... model
+# settings" — so a deployed release projects the published fact through one model
+# chosen ahead of time. Every top-level field a resource action's result may carry,
+# named once so the whole-card surface and each workspace section can share it.
+DEPLOYMENT_FIELDS = {
+    "overview": frozenset({"collection", "groups", "engines", "counts", "active_jobs"}),
+    "sources": frozenset({"sources", "offset"}),
+    "ingest": frozenset({"source", "group_id"}),
+    "process": frozenset({"jobs"}),
+    "groups": frozenset({"groups", "group", "deleted"}),
+    "markdown": frozenset({"record_id", "filename", "engine", "total_characters", "offset",
+                           "markdown", "has_more"}),
+    "schemas": frozenset({"schemas", "schema"}),
+    "projection_prompt": frozenset({"schema_id", "schema_name", "schema_version", "system_prompt",
+                                    "definition", "field_descriptions", "record_id", "artifact_id",
+                                    "source_id", "filename", "markdown", "truncated"}),
+    "save_projection": frozenset({"projection"}),
+    "projections": frozenset({"projection", "projections"}),
+    "draft": frozenset({"drafts", "draft"}),
+    "review": frozenset({"decision", "draft_id", "status", "reasons", "message", "fact", "event",
+                         "graph"}),
+    "graph": frozenset({"entities", "relations", "truncated"}),
+    "jobs": frozenset({"jobs", "job", "events"}),
+}
+
+
+def _surface(*names, config_fields=frozenset()):
+    return DeploymentSurface(
+        resource_actions={name: DEPLOYMENT_FIELDS[name] for name in names}, config_fields=config_fields)
+
+
+def _deployment():
+    """What a published release of the Knowledge research Legion can do.
+
+    ``settings`` never appears here: the collection name, PDF engine and MinerU URL
+    stay engineering-only, matching "it does not mount ... model settings". Every
+    other business action a person uses to drive the pipeline — upload, convert,
+    organize into groups, project, draft, review, publish — is exactly what a
+    deployed release is for, so it is granted. The layout can place this card as one
+    whole pane (``surface``) or, as the Knowledge research preset's own layout does,
+    extract each section into its own tab (``sections``); both are covered so either
+    shape of a saved workspace can publish.
+    """
+    all_actions = tuple(DEPLOYMENT_FIELDS)
+    return NodeDeploymentDefinition(
+        surface=_surface(*all_actions, config_fields={"default_model"}),
+        sections={
+            # Declared with no grants of its own so the pane can still be placed
+            # without failing publication; hide it in the layout editor to keep a
+            # release from showing engineering configuration at all.
+            "settings": DeploymentSurface(),
+            "sources": _surface("overview", "sources", "ingest", "process", "groups", "jobs"),
+            "schemas": _surface("schemas"),
+            "markdown": _surface("markdown", "projection_prompt", config_fields={"default_model"}),
+            "projections": _surface("projections", "save_projection", "draft"),
+            "review": _surface("draft", "review"),
+            "graph": _surface("graph"),
+        },
+    )
 
 
 def _guarded(handler):
@@ -53,10 +114,14 @@ class KnowledgeConfig(BaseModel):
     status: Literal["available", "error"] = "available"
     description: str = Field(default="", max_length=2000,
         json_schema_extra={"agentReadable": True, "agentWritable": True})
+    # A deployment has no live model picker, so projection there uses whichever
+    # model reference (an "oaw:model:..." id, set from the engineering Settings
+    # section) was chosen before publishing. Blank until someone picks one.
+    default_model: str = Field(default="", max_length=200)
 
 
 class KnowledgeBasePlugin:
-    descriptor = PluginDescriptor(id=PREFIX, version="0.1.0", plugin_api_version="1.17",
+    descriptor = PluginDescriptor(id=PREFIX, version="0.2.0", plugin_api_version="1.21",
         name="Knowledge base",
         description="Embedded research knowledge base: documents to markdown, markdown to structured JSON, and a review-gated knowledge graph.")
 
@@ -92,7 +157,8 @@ class KnowledgeBasePlugin:
             # deletion warning already promises. Files are never captured.
             templateable=True, template_status="available",
             frontend={"preview": "preview", "body": "workspace", "workspace": "workspace"},
-            surfaces={"preview": True, "inspector": True, "workspace": True}))
+            surfaces={"preview": True, "inspector": True, "workspace": True},
+            deployment=_deployment()))
 
         for access, label, short, granted, description in (
             ("read", "Knowledge read", "read", READ_ACTIONS,

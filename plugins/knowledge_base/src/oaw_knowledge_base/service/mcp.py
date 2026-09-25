@@ -3,9 +3,9 @@
 Tool names, descriptions and JSON Schemas come straight from
 :mod:`oaw_knowledge_base.operations`, so a harness calling ``knowledge_markdown``
 through MCP gets exactly what an OAW Agent gets calling the capability of the same
-name. ``ingest``, ``settings`` and ``review`` are absent for the same reason the OAW
-card gives them no capability kind: uploading raw data and publishing a fact are human
-acts, not tool calls.
+name. ``ingest``, ``process``, ``groups``, ``settings`` and ``review`` are absent for
+the same reason the OAW card gives them no capability kind: uploading raw data,
+converting it, managing groups and publishing a fact are human acts, not tool calls.
 
 The collection is bound when the server is launched (``kb mcp --collection default``)
 rather than added to every schema, which keeps the schemas identical to the card's.

@@ -45,11 +45,12 @@ type Action = (name: string, args: Record<string, unknown>, confirm?: boolean) =
   Promise<Record<string, unknown> | undefined>;
 
 /** Renders the workspace over a stub card, answering whatever the test leaves out. */
-const open = (handler: Action) => {
+const open = (handler: Action, overrides: { card?: Record<string, unknown>; host?: Record<string, unknown> } = {}) => {
   const action = vi.fn(async (name: string, args: Record<string, unknown>, confirm?: boolean) =>
     await handler(name, args, confirm) ?? (name === "overview" ? overview() : EMPTY[name] ?? {}));
   const Workspace = plugin.views.workspace;
-  const props = { card: { id: "card-1", name: "Knowledge" }, host: { resourceAction: action } };
+  const props = { card: { id: "card-1", name: "Knowledge", config: { default_model: "" }, ...overrides.card },
+    host: { resourceAction: action, ...overrides.host } };
   render(<Workspace {...props as unknown as PluginViewProps} />);
   return action;
 };
@@ -67,13 +68,19 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-it("uploads a document and reads its markdown once the conversion job finishes", async () => {
+it("uploads a document and reads its markdown once a batch process job finishes", async () => {
+  let uploaded = false;
   let converted = false;
   const action = open(async name => {
-    if (name === "sources") return { sources: [converted ? CONVERTED : SOURCE] };
+    if (name === "sources") return { sources: [!uploaded ? SOURCE : converted ? CONVERTED : SOURCE] };
     if (name === "ingest") {
+      uploaded = true;
+      return { source: { id: "source-1", filename: "sintering.md" }, group_id: "collection-1" };
+    }
+    if (name === "process") {
       converted = true;
-      return { source: { id: "source-1" }, job: { id: "job-1", status: "QUEUED" } };
+      return { jobs: [{ source_id: "source-1", filename: "sintering.md",
+        job: { id: "job-1", status: "QUEUED" } }] };
     }
     if (name === "jobs") return { jobs: [{ id: "job-1", kind: "pipeline",
       status: converted ? "COMPLETED" : "QUEUED", progress: 1, message: "markdown ready",
@@ -83,10 +90,16 @@ it("uploads a document and reads its markdown once the conversion job finishes",
   });
 
   expect(await screen.findByRole("button", { name: /sintering\.md.*awaiting conversion/ })).toBeTruthy();
-  fireEvent.change(screen.getByLabelText("Add a document"), {
+  fireEvent.change(screen.getByLabelText("Add documents"), {
     target: { files: [new File(["# Sintering"], "sintering.md", { type: "text/markdown" })] } });
   await waitFor(() => expect(action).toHaveBeenCalledWith("ingest", expect.objectContaining({
     filename: "sintering.md", media_type: "text/markdown" }), undefined));
+
+  // Uploading never converts on its own: select it and process it explicitly.
+  fireEvent.click(screen.getByLabelText("Select sintering.md"));
+  fireEvent.click(await screen.findByRole("button", { name: "Process 1 selected" }));
+  await waitFor(() => expect(action).toHaveBeenCalledWith(
+    "process", { source_ids: ["source-1"] }, undefined));
 
   fireEvent.click(await screen.findByRole("button", { name: /sintering\.md.*markdown via text/ }));
   expect(await screen.findByText("# Sintering of Si3N4")).toBeTruthy();
@@ -171,4 +184,40 @@ it("surfaces a failed conversion with the step that failed", async () => {
   fireEvent.click(await screen.findByRole("button", { name: /job-1.*FAILED/ }));
   expect(await screen.findByText("convert")).toBeTruthy();
   expect(screen.getAllByRole("alert").some(node => node.textContent?.includes("scan.bin"))).toBe(true);
+});
+
+it("hides engineering settings and posts through the deployment bridge when deployed", async () => {
+  const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({
+    projection: { id: "projection-1", validation: { valid: true } },
+    truncated: false, record_id: "record-1" }) }));
+  vi.stubGlobal("fetch", fetchMock);
+  const action = open(async name => {
+    if (name === "sources") return { sources: [CONVERTED] };
+    if (name === "schemas") return { schemas: [SCHEMA] };
+    if (name === "markdown") return DOCUMENT;
+    return undefined;
+  }, {
+    card: { config: { default_model: "oaw:model:model-1" } },
+    host: { deployment: { config_fields: ["default_model"], document_fields: [], summary_fields: [],
+      document_actions: [], downloads: [], resource_actions: {}, execution: false } },
+  });
+
+  // The Settings section is engineering-only and never mounts once deployed.
+  expect(screen.queryByRole("region", { name: "Settings" })).toBeNull();
+  expect(screen.queryByLabelText("Collection name")).toBeNull();
+
+  fireEvent.click(await screen.findByRole("button", { name: /sintering\.md/ }));
+  await screen.findByText("# Sintering of Si3N4");
+  // No live picker either: the deployment shows the model fixed at publish time.
+  expect(screen.queryByLabelText("Model")).toBeNull();
+  expect(await screen.findByText("Model: oaw:model:model-1")).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("Extraction schema"), { target: { value: "schema-1" } });
+  fireEvent.click(screen.getByRole("button", { name: "Project to JSON" }));
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+  const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+  expect(url).toBe("/api/runtime-app/workspace/knowledge/card-1/project");
+  expect(JSON.parse(String(init.body))).toEqual({
+    schema_id: "schema-1", model: "oaw:model:model-1", record_id: "record-1" });
+  expect(await screen.findByText("Projection projection-1 saved")).toBeTruthy();
 });

@@ -1,9 +1,9 @@
 """The ``Knowledge research`` formation: a Librarian, a Conversation and a base.
 
-The pipeline is something a person drives from the card: upload a PDF in Sources,
-watch Jobs, pick a schema and press **Project to JSON** in Markdown, build a draft
-from Projections, approve it in Review. The workspace is the tool; the buttons are
-the interface. So this formation puts the knowledge sections front and centre and
+The pipeline is something a person drives from the card: upload files and convert
+them in Sources, pick a schema and press **Project to JSON** in Markdown, build a
+draft from Projections, approve it in Review. The workspace is the tool; the buttons
+are the interface. So this formation puts the knowledge sections front and centre and
 keeps the conversation as a sidebar beside them.
 
 The Librarian holds ``knowledge.base.read`` and nothing more. It answers questions
@@ -28,14 +28,14 @@ Your tools:
   document it came from. These are candidates, not facts.
 - knowledge_graph — the published graph: query entities by name or type, or traverse
   outward from one. This is the only place facts live.
-- knowledge_jobs — conversion and extraction progress, including failures.
+- knowledge_jobs — conversion progress and any failure, per group or across the base.
 
 The person drives the pipeline from the workspace, not through you. Uploading a
-document, running a projection, building a draft and approving it are all buttons on
-the card. When someone asks you to do one of those, say plainly which section to use:
-Sources to upload, Jobs to watch a conversion, Markdown to project a document against
-a schema, Projections to build a draft, Review to approve it. Do not offer to do it
-yourself and do not ask to be given the power.
+document, converting it, running a projection, building a draft and approving it are
+all buttons on the card. When someone asks you to do one of those, say plainly which
+section to use: Sources to upload and convert (including in batch), Markdown to
+project a document against a schema, Projections to build a draft, Review to approve
+it. Do not offer to do it yourself and do not ask to be given the power.
 
 When you answer:
 - Check the graph before you answer a factual question, and say so when the answer
@@ -71,14 +71,14 @@ def definition():
     # Three columns, left to right: settings, the working tabs, the conversation.
     # Settings configure the base; the tabs are where the work happens, one
     # functional panel at a time; the conversation sits beside it to ask about
-    # what is there.
+    # what is there. Jobs has no tab of its own — its log lives inside Sources,
+    # next to the upload control and the batch "process" button it reports on.
     layout = {"version": 2, "hidden_sections": [], "root": split("horizontal", .18,
         pane("knowledge", "settings"),
         split("horizontal", .62,
             tabs(view("knowledge", "sources"), view("knowledge", "schemas"),
                  view("knowledge", "markdown"), view("knowledge", "projections"),
-                 view("knowledge", "review"), view("knowledge", "graph"),
-                 view("knowledge", "jobs")),
+                 view("knowledge", "review"), view("knowledge", "graph")),
             split("vertical", .26, pane("conversation", "sessions"),
                   pane("conversation", "conversation"))))}
     nodes = (

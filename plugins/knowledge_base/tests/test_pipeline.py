@@ -48,13 +48,15 @@ def run(context, handler, **arguments):
 
 
 def ingest_document(context, text=DOCUMENT, filename="sintering.md"):
-    result = run(context, actions.ingest, filename=filename,
-                 content_base64=base64.b64encode(text.encode()).decode(),
-                 media_type="text/markdown")
+    ingested = run(context, actions.ingest, filename=filename,
+                   content_base64=base64.b64encode(text.encode()).decode(),
+                   media_type="text/markdown")
+    source_id = ingested["source"]["id"]
+    processed = run(context, actions.process_sources, source_ids=[source_id])
     kb = client.open_client(context.node_id, context.storage_path)
-    job = kb.jobs.wait(result["job"]["id"], timeout=60)
+    job = kb.jobs.wait(processed["jobs"][0]["job"]["id"], timeout=60)
     assert job.status == "COMPLETED", job.error
-    return result["source"]["id"], job
+    return source_id, job
 
 
 def test_ingest_converts_to_markdown_with_evidence(card):
@@ -218,8 +220,10 @@ def test_an_unconvertible_upload_fails_in_the_job_not_the_action(card):
     submitted = run(card, actions.ingest, filename="scan.bin",
                     content_base64=base64.b64encode(b"\x00\x01\x02").decode(),
                     media_type="application/octet-stream")
+    assert "job" not in submitted
+    processed = run(card, actions.process_sources, source_ids=[submitted["source"]["id"]])
     kb = client.open_client(card.node_id, card.storage_path)
-    job = kb.jobs.wait(submitted["job"]["id"], timeout=60)
+    job = kb.jobs.wait(processed["jobs"][0]["job"]["id"], timeout=60)
     assert job.status == "FAILED"
     assert "markdown engine" in (job.error or "")
 
@@ -236,3 +240,135 @@ def test_jobs_report_progress_events(card):
     assert detail["job"]["source_id"] == source_id
     assert any("markdown" in (event["message"] or "").lower() for event in detail["events"])
     assert json.dumps(detail)  # the payload must stay JSON serializable
+
+
+def test_groups_can_be_created_renamed_and_deleted(card):
+    listed = run(card, actions.groups)["groups"]
+    assert len(listed) == 1 and listed[0]["is_default"]
+    default_id = listed[0]["id"]
+
+    created = run(card, actions.groups, operation="create", name="Alloys")["group"]
+    assert created["name"] == "Alloys" and created["source_count"] == 0
+
+    with pytest.raises(KnowledgeError):
+        run(card, actions.groups, operation="create", name="Alloys")
+
+    renamed = run(card, actions.groups, operation="rename",
+                  group_id=created["id"], name="Alloys v2")["group"]
+    assert renamed["name"] == "Alloys v2"
+
+    run(card, actions.groups, operation="delete", group_id=created["id"])
+    assert {item["id"] for item in run(card, actions.groups)["groups"]} == {default_id}
+
+    with pytest.raises(KnowledgeError):
+        run(card, actions.groups, operation="delete", group_id=default_id)
+
+
+def test_sources_are_filed_into_the_chosen_group_and_listed_separately(card):
+    alloys = run(card, actions.groups, operation="create", name="Alloys")["group"]
+
+    default_source, _ = ingest_document(card, filename="default.md")
+    ingested = run(card, actions.ingest, filename="alloy.md",
+                  content_base64=base64.b64encode(DOCUMENT.encode()).decode(),
+                  media_type="text/markdown", group_id=alloys["id"])
+    assert ingested["group_id"] == alloys["id"]
+    assert "job" not in ingested  # a batch of one still needs an explicit process step
+
+    # The default view stays scoped to the default group, exactly as a plain card
+    # without any groups behaves.
+    default_only = run(card, actions.sources)["sources"]
+    assert [item["filename"] for item in default_only] == ["default.md"]
+
+    scoped = run(card, actions.sources, group_id=alloys["id"])["sources"]
+    assert [item["filename"] for item in scoped] == ["alloy.md"]
+    assert scoped[0]["group_name"] == "Alloys"
+
+    everything = run(card, actions.sources, all_groups=True)["sources"]
+    assert {item["filename"] for item in everything} == {"default.md", "alloy.md"}
+
+    overview_default = run(card, actions.overview)
+    assert overview_default["counts"]["sources"] == 1
+    assert {group["name"] for group in overview_default["groups"]} == {"Knowledge base", "Alloys"}
+    overview_all = run(card, actions.overview, all_groups=True)
+    assert overview_all["counts"]["sources"] == 2
+
+
+def test_process_sources_runs_in_batch_and_skips_what_is_already_converted(card):
+    alloys = run(card, actions.groups, operation="create", name="Alloys")["group"]
+    ids = []
+    for name in ("a.md", "b.md"):
+        result = run(card, actions.ingest, filename=name,
+                     content_base64=base64.b64encode(DOCUMENT.encode()).decode(),
+                     media_type="text/markdown", group_id=alloys["id"])
+        ids.append(result["source"]["id"])
+        assert "job" not in result  # uploading never queues its own conversion
+
+    processed = run(card, actions.process_sources, source_ids=ids)
+    kb = client.open_client(card.node_id, card.storage_path)
+    for entry in processed["jobs"]:
+        kb.jobs.wait(entry["job"]["id"], timeout=60)
+    listing = run(card, actions.sources, group_id=alloys["id"])["sources"]
+    assert all(item["markdown"] is not None for item in listing)
+
+    # Re-running the batch over already-converted sources is a safe no-op.
+    again = run(card, actions.process_sources, source_ids=ids)
+    assert all(entry.get("skipped") == "already converted" for entry in again["jobs"])
+
+    # With no source_ids, "process all pending" only picks up unconverted sources.
+    run(card, actions.ingest, filename="c.md",
+        content_base64=base64.b64encode(DOCUMENT.encode()).decode(),
+        media_type="text/markdown", group_id=alloys["id"])
+    pending = run(card, actions.process_sources, group_id=alloys["id"])
+    assert len(pending["jobs"]) == 1 and pending["jobs"][0]["filename"] == "c.md"
+
+
+def test_drafts_and_the_graph_stay_scoped_to_the_group_that_built_them(card):
+    default_source, _ = ingest_document(card, filename="default.md")
+    default_record = run(card, actions.sources)["sources"][0]["record_id"]
+
+    alloys = run(card, actions.groups, operation="create", name="Alloys")["group"]
+    result = run(card, actions.ingest, filename="alloy.md",
+                content_base64=base64.b64encode(DOCUMENT.encode()).decode(),
+                media_type="text/markdown", group_id=alloys["id"])
+    processed = run(card, actions.process_sources, source_ids=[result["source"]["id"]])
+    kb = client.open_client(card.node_id, card.storage_path)
+    kb.jobs.wait(processed["jobs"][0]["job"]["id"], timeout=60)
+    alloy_record = run(card, actions.sources, group_id=alloys["id"])["sources"][0]["record_id"]
+
+    schema = run(card, actions.schemas, operation="create", name="Process graph",
+                definition=SCHEMA, system_prompt="Extract entities and relations.")["schema"]
+
+    def project(record_id, name):
+        data = {"entities": [{"type": "material", "name": name}], "relations": []}
+        return run(card, actions.save_projection, schema_id=schema["id"],
+                  record_id=record_id, data=data)["projection"]["id"]
+
+    default_projection = project(default_record, "Cu")
+    alloy_projection = project(alloy_record, "Steel")
+
+    # Mixing groups in one draft is refused, so a published graph traces back to
+    # exactly one group's sources.
+    with pytest.raises(KnowledgeError):
+        run(card, actions.draft, operation="create",
+            projection_ids=[default_projection, alloy_projection])
+
+    default_draft = run(card, actions.draft, operation="create",
+                        projection_ids=[default_projection])["draft"]
+    alloy_draft = run(card, actions.draft, operation="create",
+                      projection_ids=[alloy_projection])["draft"]
+
+    confirmed = KnowledgeContext(card.node_id, card.storage_path, state=card.state,
+                                confirmed=True)
+    for built in (default_draft, alloy_draft):
+        run(card, actions.review, operation="submit", draft_id=built["id"], expected_revision=1)
+        run(confirmed, actions.review, operation="approve", draft_id=built["id"],
+            expected_revision=1)
+
+    all_entities = run(card, actions.graph)["entities"]
+    assert {item["name"] for item in all_entities} == {"Cu", "Steel"}
+
+    default_group_id = run(card, actions.overview)["collection"]["id"]
+    scoped = run(card, actions.graph, group_id=default_group_id)["entities"]
+    assert {item["name"] for item in scoped} == {"Cu"}
+    scoped_alloy = run(card, actions.graph, group_id=alloys["id"])["entities"]
+    assert {item["name"] for item in scoped_alloy} == {"Steel"}

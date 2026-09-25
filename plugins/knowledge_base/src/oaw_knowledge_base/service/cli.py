@@ -167,7 +167,10 @@ def cmd_mcp(args, _backend):
 
 
 def cmd_overview(args, backend):
-    show(backend.call("overview"))
+    arguments = {"all_groups": args.all_groups}
+    if args.group:
+        arguments["group_id"] = args.group
+    show(backend.call("overview", arguments))
     return 0
 
 
@@ -180,7 +183,7 @@ def cmd_settings(args, backend):
 
 
 def cmd_ingest(args, backend):
-    results = []
+    uploaded = []
     for name in args.files:
         path = Path(name)
         try:
@@ -188,17 +191,27 @@ def cmd_ingest(args, backend):
         except OSError as error:
             raise CliError(f"Could not read {path}: {error}") from None
         media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        result = backend.call("ingest", {
-            "filename": path.name, "media_type": media_type,
-            "content_base64": base64.b64encode(data).decode("ascii")})
-        results.append(result)
-        print(f"{path.name}: source {result['source']['id']}  job {result['job']['id']}",
-              file=sys.stderr)
-    # In process the job thread dies with this command, so wait for the conversion.
+        arguments = {"filename": path.name, "media_type": media_type,
+                    "content_base64": base64.b64encode(data).decode("ascii")}
+        if args.group:
+            arguments["group_id"] = args.group
+        result = backend.call("ingest", arguments)
+        uploaded.append(result)
+        print(f"{path.name}: source {result['source']['id']}", file=sys.stderr)
+    # A batch upload converts as one batch too, so the promise "ingest converts" holds
+    # for the CLI even though the plugin's own ingest action no longer does it alone.
+    processed = backend.call("process", {
+        "source_ids": [item["source"]["id"] for item in uploaded]})
+    jobs_by_source = {item["source_id"]: item.get("job") for item in processed["jobs"]}
+    for item in uploaded:
+        item["job"] = jobs_by_source.get(item["source"]["id"])
+        if item["job"]:
+            print(f"{item['source']['filename']}: job {item['job']['id']}", file=sys.stderr)
     if not backend.remote and not args.no_wait:
-        for result in results:
-            _wait(backend, result["job"]["id"], args.timeout)
-    show({"ingested": results})
+        for item in uploaded:
+            if item["job"]:
+                _wait(backend, item["job"]["id"], args.timeout)
+    show({"ingested": uploaded})
     return 0
 
 
@@ -227,8 +240,11 @@ def cmd_jobs(args, backend):
     if args.job:
         show(backend.call("jobs", {"job_id": args.job}))
         return 0
+    arguments = {"limit": args.limit}
+    if args.group:
+        arguments["group_id"] = args.group
     while True:
-        payload = backend.call("jobs", {"limit": args.limit})
+        payload = backend.call("jobs", arguments)
         show(payload)
         active = [job for job in payload["jobs"] if job["status"] in ACTIVE_JOBS]
         if not args.watch or not active:
@@ -236,8 +252,40 @@ def cmd_jobs(args, backend):
         time.sleep(2.0)
 
 
+def cmd_process(args, backend):
+    arguments = {"source_ids": args.source or []}
+    if args.group:
+        arguments["group_id"] = args.group
+    show(backend.call("process", arguments))
+    return 0
+
+
+def cmd_groups(args, backend):
+    if args.operation == "list":
+        show(backend.call("groups", {"operation": "list"}))
+        return 0
+    if args.operation == "create":
+        if not args.name:
+            raise CliError("Pass --name to create a group")
+        show(backend.call("groups", {"operation": "create", "name": args.name}))
+        return 0
+    if not args.group_id:
+        raise CliError(f"Pass the group id to {args.operation}")
+    if args.operation == "rename":
+        if not args.name:
+            raise CliError("Pass --name to rename a group")
+        show(backend.call("groups", {"operation": "rename", "group_id": args.group_id,
+                                     "name": args.name}))
+        return 0
+    show(backend.call("groups", {"operation": "delete", "group_id": args.group_id}))
+    return 0
+
+
 def cmd_sources(args, backend):
-    show(backend.call("sources", {"limit": args.limit, "offset": args.offset}))
+    arguments = {"limit": args.limit, "offset": args.offset, "all_groups": args.all_groups}
+    if args.group:
+        arguments["group_id"] = args.group
+    show(backend.call("sources", arguments))
     return 0
 
 
@@ -339,18 +387,23 @@ def cmd_projections(args, backend):
     if args.projection_id:
         show(backend.call("projections", {"projection_id": args.projection_id}))
         return 0
-    arguments = {"limit": args.limit}
+    arguments = {"limit": args.limit, "all_groups": args.all_groups}
     if args.record:
         arguments["record_id"] = args.record
     if args.schema:
         arguments["schema_id"] = args.schema
+    if args.group:
+        arguments["group_id"] = args.group
     show(backend.call("projections", arguments))
     return 0
 
 
 def cmd_draft(args, backend):
     if args.operation == "list":
-        show(backend.call("draft", {"operation": "list", "limit": args.limit}))
+        arguments = {"operation": "list", "limit": args.limit, "all_groups": args.all_groups}
+        if args.group:
+            arguments["group_id"] = args.group
+        show(backend.call("draft", arguments))
         return 0
     if args.operation == "show":
         show(backend.call("draft", {"operation": "get", "draft_id": args.draft_id}))
@@ -384,9 +437,11 @@ def cmd_approve(args, backend):
 
 def cmd_graph(args, backend):
     if args.traverse:
-        show(backend.call("graph", {"operation": "traverse", "entity_id": args.traverse,
-                                    "max_depth": args.depth, "direction": args.direction,
-                                    "limit": args.limit}))
+        arguments = {"operation": "traverse", "entity_id": args.traverse,
+                    "max_depth": args.depth, "direction": args.direction, "limit": args.limit}
+        if args.group:
+            arguments["group_id"] = args.group
+        show(backend.call("graph", arguments))
         return 0
     arguments = {"operation": "query", "limit": args.limit}
     if args.type:
@@ -395,6 +450,8 @@ def cmd_graph(args, backend):
         arguments["relation_type"] = args.relation
     if args.name:
         arguments["name_contains"] = args.name
+    if args.group:
+        arguments["group_id"] = args.group
     show(backend.call("graph", arguments))
     return 0
 
@@ -453,7 +510,10 @@ def build_parser():
         backend=False)
     add("tools", cmd_tools, help="Print the agent tool manifest", backend=False)
 
-    add("overview", cmd_overview, help="Counts, settings and available PDF engines")
+    overview = add("overview", cmd_overview, help="Counts, settings and available PDF engines")
+    overview.add_argument("--group", help="Narrow to one group (collection id)")
+    overview.add_argument("--all-groups", dest="all_groups", action="store_true",
+                          help="Total across every group instead of just the default one")
 
     settings = add("settings", cmd_settings, help="Show or change this collection's settings")
     settings.add_argument("--collection-name")
@@ -462,20 +522,35 @@ def build_parser():
 
     ingest = add("ingest", cmd_ingest, help="Upload files and convert them to markdown")
     ingest.add_argument("files", nargs="+")
+    ingest.add_argument("--group", help="Group (collection id) to file the sources into")
     ingest.add_argument("--no-wait", action="store_true",
                         help="Return as soon as the job is queued (in-process runs will "
                              "abandon it)")
     ingest.add_argument("--timeout", type=float, default=900.0)
+
+    process = add("process", cmd_process, help="Convert uploaded sources to markdown in a batch")
+    process.add_argument("source", nargs="*", help="Source ids; omit to process every "
+                         "unconverted source")
+    process.add_argument("--group", help="Narrow to sources in this group when no ids are given")
+
+    groups = add("groups", cmd_groups, help="List, create, rename or delete groups")
+    groups.add_argument("operation", choices=("list", "create", "rename", "delete"))
+    groups.add_argument("group_id", nargs="?")
+    groups.add_argument("--name")
 
     jobs = add("jobs", cmd_jobs, help="List conversion jobs, or follow one")
     jobs.add_argument("--job")
     jobs.add_argument("--watch", action="store_true")
     jobs.add_argument("--limit", type=int, default=20)
     jobs.add_argument("--timeout", type=float, default=900.0)
+    jobs.add_argument("--group", help="Narrow to one group (collection id)")
 
     sources = add("sources", cmd_sources, help="List uploaded documents")
     sources.add_argument("--limit", type=int, default=50)
     sources.add_argument("--offset", type=int, default=0)
+    sources.add_argument("--group", help="Narrow to one group (collection id)")
+    sources.add_argument("--all-groups", dest="all_groups", action="store_true",
+                         help="List across every group instead of just the default one")
 
     markdown = add("markdown", cmd_markdown, help="Print the extracted markdown")
     markdown.add_argument("--source")
@@ -518,12 +593,18 @@ def build_parser():
     projections.add_argument("--record")
     projections.add_argument("--schema")
     projections.add_argument("--limit", type=int, default=50)
+    projections.add_argument("--group", help="Narrow to one group (collection id)")
+    projections.add_argument("--all-groups", dest="all_groups", action="store_true",
+                             help="List across every group instead of just the default one")
 
     draft = add("draft", cmd_draft, help="Build a graph draft from projections")
     draft.add_argument("operation", choices=("list", "show", "create"))
     draft.add_argument("--projection", action="append", default=[])
     draft.add_argument("--draft-id")
     draft.add_argument("--limit", type=int, default=50)
+    draft.add_argument("--group", help="Narrow \"list\" to one group (collection id)")
+    draft.add_argument("--all-groups", dest="all_groups", action="store_true",
+                       help="List drafts across every group instead of just the default one")
 
     for name, function, help_text in (
         ("submit", cmd_submit, "Send a draft for review"),
@@ -543,6 +624,7 @@ def build_parser():
     graph.add_argument("--relation")
     graph.add_argument("--name")
     graph.add_argument("--limit", type=int, default=200)
+    graph.add_argument("--group", help="Narrow to entities/relations tagged with one group")
     return parser
 
 

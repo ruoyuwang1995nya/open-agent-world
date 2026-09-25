@@ -14,6 +14,8 @@
 .knowledge-toolbar > button:last-child { margin-left: auto; }
 .knowledge-counts, .knowledge-meta { color: var(--ink-soft); font-size: 11px; }
 .knowledge-running { color: var(--knowledge-accent); font-size: 11px; }
+.knowledge-groupselect { flex-direction: row; align-items: center; gap: 6px; font-size: 11px; }
+.knowledge-groupbar { margin-bottom: 2px; }
 .knowledge-settings-section { font-size: 12px; }
 .knowledge-settings-section > label, .knowledge-settings-section > small, .knowledge-settings-section > p { margin: 8px 0 0; max-width: 340px; }
 .knowledge-settings-section small, .knowledge-settings-section p { color: var(--ink-soft); font-size: 11px; line-height: 1.5; }

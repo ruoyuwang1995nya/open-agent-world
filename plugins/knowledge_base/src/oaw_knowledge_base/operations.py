@@ -3,8 +3,8 @@
 Every front door reads this table — the OAW plugin turns each row into a capability
 and a resource action, the HTTP service turns it into a route, the MCP server turns it
 into a tool, and the CLI turns it into a subcommand. A row with no ``tool_name`` is
-deliberately unreachable by any agent on any transport: uploading raw data, changing
-settings and reviewing a draft stay human acts.
+deliberately unreachable by any agent on any transport: uploading raw data, converting
+it in batch, managing groups, changing settings and reviewing a draft stay human acts.
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class Operation:
 
 OPERATIONS: tuple[Operation, ...] = (
     Operation("overview", actions.overview, actions.Overview, tool_name="knowledge_overview",
-        description="Summarize this knowledge base: source, record, schema, projection, draft, fact, entity and relation counts, the configured markdown engines, and how many conversion jobs are running. Call this first to orient before any other knowledge tool."),
+        description="Summarize this knowledge base: its groups, and source, record, schema, projection, draft, fact, entity and relation counts (optionally narrowed to one group_id), the configured markdown engines, and how many conversion jobs are running. Call this first to orient before any other knowledge tool."),
     Operation("sources", actions.sources, actions.Sources, tool_name="knowledge_sources",
         description="List uploaded sources with their markdown conversion status, record id and projection count. Use the returned source_id or record_id with knowledge_markdown and knowledge_projection_prompt."),
     Operation("markdown", actions.markdown, actions.Markdown, tool_name="knowledge_markdown",
@@ -59,7 +59,11 @@ OPERATIONS: tuple[Operation, ...] = (
         description="Check markdown conversion jobs and their progress events. Poll this after an upload until the job reports COMPLETED before reading its markdown."),
     # No tool_name below this line: human-only, on every transport.
     Operation("ingest", actions.ingest, actions.Ingest,
-        description="Upload one raw file and queue its markdown conversion job."),
+        description="Upload one raw file into a group. It stays unconverted until the Process action runs its conversion job."),
+    Operation("process", actions.process_sources, actions.ProcessSources,
+        description="Convert one or more uploaded sources to markdown in a batch. With no source_ids, converts every unconverted source, optionally narrowed to one group."),
+    Operation("groups", actions.groups, actions.Groups,
+        description="List, create, rename or delete the groups sources are filed into. Every source belongs to exactly one group; deleting a non-empty group is refused."),
     Operation("settings", actions.update_settings, actions.Settings,
         description="Read or change this knowledge base's collection name, PDF engine and MinerU base URL."),
     Operation("review", actions.review, actions.Review,

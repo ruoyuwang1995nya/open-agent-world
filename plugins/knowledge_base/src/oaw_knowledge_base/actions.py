@@ -4,8 +4,9 @@ Each handler is deliberately short — validate, make a few MKB calls, return bo
 JSON — because the host holds the global node mutation lock for the whole call. Slow
 work belongs in the ``oaw.to_markdown`` job or in the host LLM bridge.
 
-``ingest`` and ``review`` carry no capability kind in ``__init__.py``, which makes them
-desktop-only: uploading raw data and publishing a fact stay human acts.
+``ingest``, ``process``, ``groups`` and ``review`` carry no capability kind in
+``__init__.py``, which makes them desktop-only: uploading raw data, converting it,
+managing groups and publishing a fact stay human acts.
 """
 from __future__ import annotations
 
@@ -44,11 +45,38 @@ def settings_of(context):
     return values
 
 
-def _base(context):
-    """The client plus the card's single collection, opened lazily on first use."""
+def _resolve_group(kb, group_id, settings):
+    """One concrete group: an explicit id, or the card's default collection.
+
+    The default collection is get-or-created from the ``collection_name`` setting,
+    which is what every card had before groups existed — so an old card with no
+    group management keeps working exactly as it did, as the group nobody named.
+    """
+    if group_id is None:
+        return collection(kb, settings["collection_name"])
+    return kb.collections.require(_uuid(group_id, "group_id"))
+
+
+def _base(context, group_id=None):
+    """The client plus one resolved group, opened lazily on first use."""
     settings = settings_of(context)
     kb = open_client(context.node_id, context.storage_path)
-    return kb, collection(kb, settings["collection_name"]), settings
+    return kb, _resolve_group(kb, group_id, settings), settings
+
+
+def _any_group(group_id):
+    """``None`` means "every group"; otherwise the exact id to filter listings by."""
+    return _uuid(group_id, "group_id") if group_id else None
+
+
+def _scope(group, all_groups):
+    """The collection_id to filter a listing by: one group, or every group.
+
+    Historically a card had exactly one collection, so every listing filtered by
+    it without a choice. ``all_groups`` opts a caller into the merged, cross-group
+    view instead of changing what an omitted ``group_id`` already meant.
+    """
+    return None if all_groups else group.id
 
 
 def _bounded(payload):
@@ -76,28 +104,34 @@ def _uuid(value, label):
 
 
 class Overview(Request):
-    pass
+    group_id: str | None = None
+    all_groups: bool = False
 
 
 def overview(context, arguments):
-    Overview.model_validate(arguments)
-    kb, group, settings = _base(context)
-    sources = kb.sources.list(collection_id=group.id, limit=500)
+    request = Overview.model_validate(arguments)
+    kb, group, settings = _base(context, request.group_id)
+    # An explicit group, or the resolved default: the same single-group view every
+    # card had before groups existed. all_groups opts into totals for the whole card.
+    scope = _scope(group, request.all_groups)
+    sources = kb.sources.list(collection_id=scope, limit=500)
     jobs = kb.jobs.list(limit=50)
-    drafts = kb.knowledge.list_drafts(collection_id=group.id, limit=200)
-    counts = kb.oaw_graph_store.counts()
+    drafts = kb.knowledge.list_drafts(collection_id=scope, limit=200)
+    counts = kb.oaw_graph_store.counts(group_id=scope)
+    default_group_id = str(collection(kb, settings["collection_name"]).id)
     return _bounded({
         "collection": {"id": str(group.id), "name": group.name},
+        "groups": [_group_json(item, default_group_id) for item in kb.collections.list(limit=500)],
         "settings": settings,
         "engines": available_engines(settings["mineru_base_url"] or None),
         "counts": {
             "sources": len(sources),
-            "records": len(kb.records.list(collection_id=group.id, limit=500)),
+            "records": len(kb.records.list(collection_id=scope, limit=500)),
             "schemas": len(kb.schemas.list(limit=200)),
-            "projections": len(kb.projections.list(collection_id=group.id, limit=500)),
+            "projections": len(kb.projections.list(collection_id=scope, limit=500)),
             "drafts": len(drafts),
             "pending_review": len([d for d in drafts if d.status in {"DRAFT", "SUBMITTED"}]),
-            "facts": len(kb.knowledge.list_facts(collection_id=group.id, limit=500)),
+            "facts": len(kb.knowledge.list_facts(collection_id=scope, limit=500)),
             "entities": counts["entities"],
             "relations": counts["relations"],
         },
@@ -125,12 +159,70 @@ def update_settings(context, arguments):
     return _bounded({"settings": settings_of(context)})
 
 
+# ---------------------------------------------------------------- groups
+
+
+class Groups(Request):
+    operation: Literal["list", "create", "rename", "delete"] = "list"
+    group_id: str | None = None
+    name: str | None = Field(default=None, max_length=200)
+
+
+def _group_json(item, default_group_id):
+    return {"id": str(item.id), "name": item.name, "source_count": item.source_count,
+            "created_at": item.created_at, "is_default": str(item.id) == default_group_id}
+
+
+def groups(context, arguments):
+    """Create, rename and delete the groups sources are filed into.
+
+    A group is one MKB collection: sources, and everything derived from them
+    (records, projections, drafts and the graph) already filter by ``collection_id``
+    everywhere MKB's own repositories do, so using collections as groups gets that
+    scoping for free instead of the plugin re-implementing it.
+    """
+    request = Groups.model_validate(arguments)
+    settings = settings_of(context)
+    kb = open_client(context.node_id, context.storage_path)
+    default_group_id = str(collection(kb, settings["collection_name"]).id)
+
+    if request.operation == "list":
+        return _bounded({"groups": [
+            _group_json(item, default_group_id) for item in kb.collections.list(limit=500)]})
+
+    clean_name = request.name.strip() if request.name else None
+    if request.operation == "create":
+        if not clean_name:
+            raise KnowledgeError("name is required to create a group")
+        if any(item.name == clean_name for item in kb.collections.list(limit=500)):
+            raise KnowledgeError(f"A group named '{clean_name}' already exists")
+        item = kb.collections.create(name=clean_name)
+        return _bounded({"group": _group_json(item, default_group_id)})
+
+    if not request.group_id:
+        raise KnowledgeError("group_id is required")
+    identifier = _uuid(request.group_id, "group_id")
+    if request.operation == "rename":
+        if not clean_name:
+            raise KnowledgeError("name is required to rename a group")
+        item = kb.collections.update(identifier, name=clean_name)
+        return _bounded({"group": _group_json(item, default_group_id)})
+
+    # delete
+    if len(kb.collections.list(limit=500)) <= 1:
+        raise KnowledgeError("Cannot delete the last remaining group")
+    kb.collections.delete(identifier)
+    return _bounded({"deleted": str(identifier)})
+
+
 # ---------------------------------------------------------------- sources
 
 
 class Sources(Request):
     limit: int = Field(default=50, ge=1, le=200)
     offset: int = Field(default=0, ge=0)
+    group_id: str | None = None
+    all_groups: bool = False
 
 
 def _record_link(kb, artifact_id):
@@ -148,20 +240,26 @@ def _record_link(kb, artifact_id):
 
 def sources(context, arguments):
     request = Sources.model_validate(arguments)
-    kb, group, _ = _base(context)
+    kb, group, _ = _base(context, request.group_id)
+    # An explicit group, or the default; all_groups lists every source across every
+    # group instead, each still carrying its own group for a per-group header.
+    scope = _scope(group, request.all_groups)
+    names = {str(item.id): item.name for item in kb.collections.list(limit=500)}
     items = []
-    for source in kb.sources.list(collection_id=group.id, limit=request.limit,
-                                  offset=request.offset):
+    for source in kb.sources.list(collection_id=scope,
+                                  limit=request.limit, offset=request.offset):
         artifacts = kb.artifacts.list(source_id=source.id, limit=10)
         markdown = next((a for a in artifacts if a.processing_type == "MARKDOWN"), None)
         record_id = None
         if markdown is not None:
             link = _record_link(kb, markdown.id)
             record_id = str(link.output_id) if link else None
+        source_group_id = str(source.collection_ids[0]) if source.collection_ids else None
         items.append({
             "id": str(source.id), "filename": source.filename,
             "media_type": source.media_type, "size": source.size,
             "created_at": source.created_at,
+            "group_id": source_group_id, "group_name": names.get(source_group_id),
             "markdown": None if markdown is None else {
                 "artifact_id": str(markdown.id), "size": markdown.size,
                 "engine": (markdown.metadata or {}).get("engine")},
@@ -179,6 +277,7 @@ class Ingest(Request):
     filename: str = Field(min_length=1, max_length=255)
     content_base64: str = Field(min_length=1)
     media_type: str = Field(default="application/octet-stream", max_length=200)
+    group_id: str | None = None
 
 
 def ingest(context, arguments):
@@ -194,16 +293,75 @@ def ingest(context, arguments):
     if len(data) > MAX_UPLOAD_BYTES:
         raise KnowledgeError("Uploads are limited to 32 MiB")
 
-    kb, group, settings = _base(context)
+    kb, group, _ = _base(context, request.group_id)
     source = kb.sources.add_bytes(group.id, data, filename=request.filename,
                                   media_type=request.media_type,
                                   metadata={"uploaded_by": _actor(context)})
-    # Conversion runs on the client's job thread; this handler must not block the lock.
-    job = submit_markdown_job(kb, source, group.id, engine=settings["pdf_engine"],
-                              mineru_base_url=settings["mineru_base_url"] or None)
+    # Storing a source no longer queues its own conversion: uploads can be batched
+    # and converted together with knowledge_process, on the caller's own schedule.
     return _bounded({"source": {"id": str(source.id), "filename": source.filename,
                                 "size": source.size, "sha256": source.sha256},
-                     "job": {"id": str(job.id), "status": job.status}})
+                     "group_id": str(group.id)})
+
+
+# ---------------------------------------------------------------- process
+
+
+class ProcessSources(Request):
+    source_ids: list[str] = Field(default_factory=list, max_length=100)
+    group_id: str | None = None
+
+
+def _has_markdown(kb, source_id):
+    return any(a.processing_type == "MARKDOWN"
+               for a in kb.artifacts.list(source_id=source_id, limit=10))
+
+
+def _active_job_for(jobs, source_id):
+    target = str(source_id)
+    for job in jobs:
+        if (job.inputs or {}).get("source_id") == target and job.status in ACTIVE_JOBS:
+            return job
+    return None
+
+
+def process_sources(context, arguments):
+    """Convert a batch of sources to markdown: the explicit step ``ingest`` no
+    longer takes on its own. With no ``source_ids``, this processes every
+    unconverted source (optionally narrowed to one group) — the "process all
+    pending" button.
+    """
+    request = ProcessSources.model_validate(arguments)
+    settings = settings_of(context)
+    kb = open_client(context.node_id, context.storage_path)
+
+    if request.source_ids:
+        sources_to_run = [kb.sources.require(_uuid(value, "source_ids"))
+                          for value in request.source_ids]
+    else:
+        sources_to_run = [source for source in
+                          kb.sources.list(collection_id=_any_group(request.group_id), limit=500)
+                          if not _has_markdown(kb, source.id)]
+
+    active_jobs = kb.jobs.list(limit=200)
+    results = []
+    for source in sources_to_run:
+        if _has_markdown(kb, source.id):
+            results.append({"source_id": str(source.id), "filename": source.filename,
+                            "skipped": "already converted"})
+            continue
+        active = _active_job_for(active_jobs, source.id)
+        if active is not None:
+            results.append({"source_id": str(source.id), "filename": source.filename,
+                            "job": {"id": str(active.id), "status": active.status}})
+            continue
+        source_group_id = (source.collection_ids[0] if source.collection_ids
+                           else collection(kb, settings["collection_name"]).id)
+        job = submit_markdown_job(kb, source, source_group_id, engine=settings["pdf_engine"],
+                                  mineru_base_url=settings["mineru_base_url"] or None)
+        results.append({"source_id": str(source.id), "filename": source.filename,
+                        "job": {"id": str(job.id), "status": job.status}})
+    return _bounded({"jobs": results})
 
 
 # ---------------------------------------------------------------- markdown
@@ -394,12 +552,14 @@ class Projections(Request):
     projection_id: str | None = None
     record_id: str | None = None
     schema_id: str | None = None
+    group_id: str | None = None
+    all_groups: bool = False
     limit: int = Field(default=50, ge=1, le=200)
 
 
 def projections(context, arguments):
     request = Projections.model_validate(arguments)
-    kb, group, _ = _base(context)
+    kb, group, _ = _base(context, request.group_id)
     if request.projection_id:
         item = kb.projections.require(_uuid(request.projection_id, "projection_id"))
         links = kb.evidence.list(output_id=item.id, limit=20)
@@ -411,8 +571,8 @@ def projections(context, arguments):
                           "artifact_id": str(link.artifact_id), "locator": link.locator}
                          for link in links]}})
     items = kb.projections.list(
-        collection_id=group.id, record_id=request.record_id, schema_id=request.schema_id,
-        newest_only=True, limit=request.limit)
+        collection_id=_scope(group, request.all_groups), record_id=request.record_id,
+        schema_id=request.schema_id, newest_only=True, limit=request.limit)
     return _bounded({"projections": [
         {"id": str(item.id), "schema_id": str(item.schema_id),
          "record_id": str(item.record_id), "status": item.status,
@@ -437,17 +597,21 @@ class Draft(Request):
     operation: Literal["list", "get", "create"] = "list"
     draft_id: str | None = None
     projection_ids: list[str] = Field(default_factory=list, max_length=50)
+    group_id: str | None = None
+    all_groups: bool = False
     limit: int = Field(default=50, ge=1, le=200)
 
 
 def draft(context, arguments):
     request = Draft.model_validate(arguments)
-    kb, group, _ = _base(context)
     if request.operation == "list":
+        kb, group, _ = _base(context, request.group_id)
         return _bounded({"drafts": [
             {"id": str(item.id), "status": item.status, "revision": item.current_revision,
              "created_by": item.created_by, "updated_at": item.updated_at}
-            for item in kb.knowledge.list_drafts(collection_id=group.id, limit=request.limit)]})
+            for item in kb.knowledge.list_drafts(
+                collection_id=_scope(group, request.all_groups), limit=request.limit)]})
+    kb = open_client(context.node_id, context.storage_path)
     if request.operation == "get":
         if not request.draft_id:
             raise KnowledgeError("draft_id is required")
@@ -463,16 +627,36 @@ def draft(context, arguments):
 
     if not request.projection_ids:
         raise KnowledgeError("Select at least one projection")
+    group_id = _projections_group(kb, request.projection_ids)
     graph, evidence_ids = build_graph(kb, request.projection_ids)
     if not graph["entities"]:
         raise KnowledgeError(
             "Those projections produced no entities; check the schema output shape")
     item, revision = kb.knowledge.create_draft(
-        group.id, graph, evidence_ids=evidence_ids, actor=_actor(context))
+        group_id, graph, evidence_ids=evidence_ids, actor=_actor(context))
     return _bounded({"draft": {"id": str(item.id), "status": item.status,
                                "revision": revision.revision,
                                "entities": len(graph["entities"]),
                                "relations": len(graph["relations"])}})
+
+
+def _projections_group(kb, projection_ids):
+    """The one group every selected projection's record belongs to.
+
+    A draft becomes one collection_id in ``kb.knowledge.create_draft``, so mixing
+    projections from two groups into it would blur which group's sources back the
+    published facts — keep that traceable by refusing the mix instead.
+    """
+    group_ids = set()
+    for identifier in projection_ids:
+        item = kb.projections.require(_uuid(identifier, "projection_id"))
+        record = kb.records.require(item.record_id)
+        group_ids.add(str(record.collection_id))
+    if len(group_ids) > 1:
+        raise KnowledgeError(
+            "Select projections from a single group to build one draft")
+    return uuid.UUID(next(iter(group_ids)))
+
 
 
 SLUG = re.compile(r"[^a-z0-9]+")
@@ -573,11 +757,18 @@ def review(context, arguments):
     revision_row = kb.knowledge.get_revision(identifier, request.expected_revision)
     if revision_row is None:
         raise KnowledgeError("No such draft revision")
+    draft_row = kb.knowledge.get_draft(identifier)
     decision, fact, event = kb.knowledge.approve(
         identifier, expected_revision=request.expected_revision,
         actor=_actor(context), notes=request.notes)
     # The published fact — never the raw model output — is what enters the graph.
     result = kb.graph.extract(fact.data, extractor=lambda payload: payload)
+    if draft_row is not None:
+        # kb.graph.extract builds Entity/Relation objects itself, with no group on
+        # them, so stamp the draft's group onto exactly what it just touched.
+        kb.oaw_graph_store.tag_group([entity.id for entity in result.entities],
+                                     [relation.id for relation in result.relations],
+                                     draft_row.collection_id)
     return _bounded({
         "decision": decision.decision,
         "fact": {"id": str(fact.id), "fact_set_id": str(fact.fact_set_id),
@@ -599,30 +790,58 @@ class GraphQuery(Request):
     max_depth: int = Field(default=1, ge=1, le=5)
     direction: Literal["both", "out", "in"] = "both"
     limit: int = Field(default=200, ge=1, le=1000)
+    group_id: str | None = None
 
 
 def graph(context, arguments):
     request = GraphQuery.model_validate(arguments)
-    kb, _, _ = _base(context)
+    kb = open_client(context.node_id, context.storage_path)
+    scope = _any_group(request.group_id)
     if request.operation == "traverse":
         if not request.entity_id:
             raise KnowledgeError("entity_id is required to traverse")
         result = kb.graph.traverse(_uuid(request.entity_id, "entity_id"),
                                    max_depth=request.max_depth, direction=request.direction)
+        all_entities, all_relations = list(result.entities), list(result.relations)
+        if scope is not None:
+            # kb.graph.traverse walks the whole store; group is a soft tag on
+            # published elements (see graph_store.py), so narrow after the walk
+            # rather than teaching mkb's traversal about it.
+            in_scope = {item.id for item in kb.oaw_graph_store.list_relations(group_id=scope)}
+            all_relations = [item for item in all_relations if item.id in in_scope]
+            kept_ids = {item.source_id for item in all_relations} | \
+                {item.target_id for item in all_relations} | {_uuid(request.entity_id, "entity_id")}
+            all_entities = [item for item in all_entities if item.id in kept_ids]
+    elif scope is not None:
+        # mkb's Graph.query has no group concept to pass a collection_id through,
+        # so this replicates its own entity/relation filtering against the store
+        # directly, narrowed to one group's tagged elements.
+        all_entities = kb.oaw_graph_store.list_entities(type=request.entity_type, group_id=scope)
+        if request.name_contains:
+            needle = request.name_contains.casefold()
+            all_entities = [item for item in all_entities if needle in item.name.casefold()]
+        entity_ids = {item.id for item in all_entities}
+        all_relations = kb.oaw_graph_store.list_relations(
+            type=request.relation_type, group_id=scope)
+        if request.entity_type or request.name_contains:
+            all_relations = [item for item in all_relations
+                             if item.source_id in entity_ids or item.target_id in entity_ids]
     else:
         result = kb.graph.query(entity_type=request.entity_type,
                                 relation_type=request.relation_type,
                                 name_contains=request.name_contains)
-    entities = list(result.entities)[:request.limit]
+        all_entities, all_relations = list(result.entities), list(result.relations)
+
+    entities = all_entities[:request.limit]
     kept = {str(entity.id) for entity in entities}
     return _bounded({
         "entities": [{"id": str(e.id), "type": e.type, "name": e.name,
                       "properties": e.properties} for e in entities],
         "relations": [{"id": str(r.id), "type": r.type, "source_id": str(r.source_id),
                        "target_id": str(r.target_id), "properties": r.properties}
-                      for r in result.relations
+                      for r in all_relations
                       if str(r.source_id) in kept and str(r.target_id) in kept][:request.limit],
-        "truncated": len(result.entities) > len(entities),
+        "truncated": len(all_entities) > len(entities),
     })
 
 
@@ -631,13 +850,14 @@ def graph(context, arguments):
 
 class Jobs(Request):
     job_id: str | None = None
+    group_id: str | None = None
     limit: int = Field(default=20, ge=1, le=100)
     after: int = Field(default=0, ge=0)
 
 
 def jobs(context, arguments):
     request = Jobs.model_validate(arguments)
-    kb, _, _ = _base(context)
+    kb = open_client(context.node_id, context.storage_path)
     if request.job_id:
         job = kb.jobs.require(_uuid(request.job_id, "job_id"))
         # jobs.events() yields plain dicts from a generator, not typed models.
@@ -646,7 +866,10 @@ def jobs(context, arguments):
             {"event": item.get("event"), "step": item.get("step_name"),
              "message": item.get("message"), "level": item.get("level"),
              "occurred_at": item.get("occurred_at")} for item in events]})
-    return _bounded({"jobs": [_job_json(job) for job in kb.jobs.list(limit=request.limit)]})
+    items = kb.jobs.list(limit=request.limit)
+    if request.group_id:
+        items = [job for job in items if (job.inputs or {}).get("collection_id") == request.group_id]
+    return _bounded({"jobs": [_job_json(job) for job in items]})
 
 
 def _job_json(job):
@@ -654,4 +877,5 @@ def _job_json(job):
             "pipeline": job.pipeline_name or PIPELINE_NAME, "progress": job.progress,
             "message": job.message, "error": job.error,
             "source_id": (job.inputs or {}).get("source_id"),
+            "group_id": (job.inputs or {}).get("collection_id"),
             "created_at": job.created_at, "completed_at": job.completed_at}
