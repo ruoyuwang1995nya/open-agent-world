@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .errors import KnowledgeError, operator_message
 from .lifecycle import KnowledgeLifecycle
 from .operations import EXTRACT_ACTIONS, OPERATIONS, READ_ACTIONS
+from .preset import definition as research_preset
 
 PREFIX = "knowledge.base"
 
@@ -72,7 +73,7 @@ class KnowledgeBasePlugin:
                 return await context.node_resource_action(capability, action, arguments)
             registration.register_capability(CapabilityDefinition(kind=kind,
                 tool_name=operation.tool_name, description=operation.description,
-                input_schema=operation.input_schema()), invoke)
+                target_parameter="knowledge", input_schema=operation.input_schema()), invoke)
             resource_actions[operation.name] = NodeResourceAction(_guarded(operation.handler),
                 capability_kind=kind)
 
@@ -86,6 +87,10 @@ class KnowledgeBasePlugin:
             traits=frozenset({"knowledge.base"}), lifecycle=KnowledgeLifecycle(),
             resource_actions=resource_actions,
             deletion_warning="Deleting this card permanently removes its documents, projections, drafts, published facts and knowledge graph. Canvas undo and copy do not preserve knowledge base files. Back up your profile before deleting knowledge you need.",
+            # Templateable with no template handler: a Legion copy deploys a card with
+            # the same name and settings over an empty database, which is what the
+            # deletion warning already promises. Files are never captured.
+            templateable=True, template_status="available",
             frontend={"preview": "preview", "body": "workspace", "workspace": "workspace"},
             surfaces={"preview": True, "inspector": True, "workspace": True}))
 
@@ -98,12 +103,15 @@ class KnowledgeBasePlugin:
             registration.register_relationship(RelationshipDefinition(
                 id=f"{PREFIX}.{access}", label=label, short_label=short, description=description,
                 source_traits=frozenset({"core.agent"}), target_types=frozenset({PREFIX}),
+                templateable=True,
                 capabilities=tuple(CapabilityGrantDefinition(f"{PREFIX}.{item}")
                                    for item in granted)))
 
         registration.register_pack(PackDefinition(id=f"{PREFIX}.default", name="Knowledge base",
             description="Turn documents into reviewed, traceable structured knowledge.",
             cards=(PREFIX,), accent_color="#8a6fd1"))
+
+        registration.register_legion_preset(research_preset())
 
 
 def create_plugin():

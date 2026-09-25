@@ -3,6 +3,7 @@ import type { FrontendPlugin, PluginViewProps } from "@oaw/plugin-api";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useWorldStore } from "../../../frontend/src/state/worldStore";
 import { availableModels } from "../../../frontend/src/state/modelConnections";
+import { GraphMap } from "./GraphMap";
 import "./style.css";
 
 type Settings = { collection_name: string; pdf_engine: string; mineru_base_url: string };
@@ -101,6 +102,7 @@ export function Workspace({ host, card }: PluginViewProps) {
   const [pending, setPending] = useState<Pending>();
   const [notice, setNotice] = useState("");
   const [filter, setFilter] = useState("");
+  const [entity, setEntity] = useState("");
   const [jobDetail, setJobDetail] = useState<{ job: Job; events: JobEvent[] }>();
   const [settings, setSettings] = useState<Settings>();
   const [busy, setBusy] = useState(false);
@@ -148,6 +150,12 @@ export function Workspace({ host, card }: PluginViewProps) {
     catch (reason) { if (generation.current === current) setError(message(reason)); }
     finally { if (generation.current === current) setBusy(false); }
   }, []);
+
+  /** Walk outward from one entity; the map keeps whatever is already placed. */
+  const expand = useCallback((id: string) => {
+    setEntity(id);
+    void perform(() => loadGraph({ operation: "traverse", entity_id: id, max_depth: 2 }));
+  }, [loadGraph, perform]);
 
   useEffect(() => {
     void perform(async () => { await refresh(); await loadGraph(); });
@@ -277,6 +285,8 @@ export function Workspace({ host, card }: PluginViewProps) {
   const markdownInline = sections.isInline("markdown");
   const currentSource = sources.find(item => item.id === selectedSource);
   const running = jobs.filter(job => ACTIVE.has(job.status));
+  // A search can drop the selected entity; the panel follows what is on the map.
+  const selectedEntity = graph?.entities.find(item => item.id === entity);
 
   return <div className="knowledge-app nodrag nowheel" aria-label={t("{v0} knowledge base", { v0: card.name })}>
     <header className="knowledge-toolbar">
@@ -461,41 +471,58 @@ export function Workspace({ host, card }: PluginViewProps) {
           </div> : <div className="knowledge-formbar">
             <button type="button" disabled={busy || draftDetail.status !== "DRAFT"}
               onClick={() => void decide("submit")}>{t("Submit for review")}</button>
-            <button type="button" className="knowledge-primary" disabled={busy || draftDetail.status === "APPROVED"}
+            {/* mkb only allows approve/reject once a draft has moved past DRAFT into IN_REVIEW. */}
+            <button type="button" className="knowledge-primary" disabled={busy || draftDetail.status !== "IN_REVIEW"}
               onClick={() => void decide("approve")}>{t("Approve")}</button>
-            <button type="button" disabled={busy || draftDetail.status === "APPROVED"}
+            <button type="button" disabled={busy || draftDetail.status !== "IN_REVIEW"}
               onClick={() => void decide("reject")}>{t("Reject")}</button>
           </div>}
         </div>}
       </WorkspaceSection>
 
-      <WorkspaceSection id="graph" title={t("Graph")} className="knowledge-section">
+      <WorkspaceSection id="graph" title={t("Graph")} className="knowledge-section knowledge-wide">
         <h3>{t("Knowledge graph")}</h3>
         <div className="knowledge-formbar">
           <label>{t("Filter by name")}<input value={filter} disabled={busy}
             onChange={event => setFilter(event.target.value)} /></label>
           <button type="button" disabled={busy} onClick={() => void perform(() =>
             loadGraph(filter.trim() ? { name_contains: filter.trim() } : {}))}>{t("Search")}</button>
+          <button type="button" disabled={busy} onClick={() => void perform(async () => {
+            setFilter(""); setEntity(""); await loadGraph();
+          })}>{t("Show everything")}</button>
         </div>
         {!graph?.entities.length ? <p className="knowledge-empty">{t("The graph is empty until a draft is approved.")}</p> : <>
           <p className="knowledge-meta">{t("{v0} entities · {v1} relations{v2}", {
             v0: graph.entities.length, v1: graph.relations.length,
             v2: graph.truncated ? t(" · result limited") : "" })}</p>
-          <ul className="knowledge-list">
-            {graph.entities.map(entity => <li key={entity.id}>
-              <button type="button" disabled={busy} title={t("Show neighbours")}
-                onClick={() => void perform(() => loadGraph({ operation: "traverse", entity_id: entity.id, max_depth: 2 }))}>
-                <span>{entity.name}</span><small>{entity.type}{Object.keys(entity.properties ?? {}).length
-                  ? ` · ${Object.entries(entity.properties).slice(0, 3).map(([key, value]) => `${key}: ${String(value)}`).join(" · ")}` : ""}</small>
-              </button>
-            </li>)}
-          </ul>
-          {!!graph.relations.length && <ul className="knowledge-relations">
-            {graph.relations.map(relation => {
-              const name = (id: string) => graph.entities.find(entity => entity.id === id)?.name ?? shortId(id);
-              return <li key={relation.id}>{name(relation.source_id)} →{relation.type}→ {name(relation.target_id)}</li>;
-            })}
-          </ul>}
+          <div className="knowledge-graph">
+            <GraphMap entities={graph.entities} relations={graph.relations} selected={entity}
+              onSelect={setEntity} onExpand={expand} />
+            <div className="knowledge-graphside">
+              <ul className="knowledge-list">
+                {graph.entities.map(item => <li key={item.id}>
+                  <button type="button" aria-pressed={entity === item.id} disabled={busy}
+                    onClick={() => setEntity(item.id)}>
+                    <span>{item.name}</span><small>{item.type}</small>
+                  </button>
+                </li>)}
+              </ul>
+              {selectedEntity && <div className="knowledge-detail">
+                <h4>{selectedEntity.name}</h4>
+                <p className="knowledge-meta">{selectedEntity.type}</p>
+                <button type="button" disabled={busy} onClick={() => expand(selectedEntity.id)}>
+                  {t("Show neighbours")}</button>
+                {!!Object.keys(selectedEntity.properties ?? {}).length && <pre>{pretty(selectedEntity.properties)}</pre>}
+                <ul className="knowledge-relations">
+                  {graph.relations.filter(relation => relation.source_id === selectedEntity.id
+                      || relation.target_id === selectedEntity.id).map(relation => {
+                    const name = (id: string) => graph.entities.find(item => item.id === id)?.name ?? shortId(id);
+                    return <li key={relation.id}>{name(relation.source_id)} →{relation.type}→ {name(relation.target_id)}</li>;
+                  })}
+                </ul>
+              </div>}
+            </div>
+          </div>
         </>}
       </WorkspaceSection>
 

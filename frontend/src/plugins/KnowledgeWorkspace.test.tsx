@@ -11,6 +11,7 @@ vi.mock("@oaw/plugin-api", () => ({
     ? value.replace(/\{(v\d+)\}/g, (_, key: string) => String(params[key]))
     : value,
   useLocale: () => undefined,
+  useNestedFlowGestures: () => null,
   useWorkspaceSections: () => ({ isInline: () => true }),
   WorkspaceSection: ({ title, children }: { title: string; children: ReactNode }) =>
     <section aria-label={title}>{children}</section>,
@@ -54,6 +55,10 @@ const open = (handler: Action) => {
 };
 
 beforeEach(() => {
+  // The Graph section draws a React Flow map, which measures itself on mount.
+  vi.stubGlobal("ResizeObserver", class {
+    observe() {} unobserve() {} disconnect() {}
+  });
   useWorldStore.setState({ modelCatalog: { revision: 1, default_model: null, connections: [{
     id: "connection-1", name: "OpenAI", adapter: "openai", base_url: "", enabled: true,
     auth_mode: "api_key", api_key_configured: true,
@@ -115,13 +120,19 @@ it("projects the selected document through the host bridge, never the plugin", a
 });
 
 it("keeps the graph empty until the person confirms the approval", async () => {
+  let inReview = false;
   let published = false;
   const action = open(async (name, args, confirm) => {
     if (name === "overview") return overview({ entities: published ? 2 : 0 });
     if (name === "draft" && args.operation === "list") return { drafts: [DRAFT] };
     if (name === "draft" && args.operation === "get") return { draft: { ...DRAFT,
+      status: inReview ? "IN_REVIEW" : DRAFT.status,
       graph: { entities: [{ name: "Si3N4" }, { name: "Sintering" }], relations: [{ type: "processed_by" }] },
       evidence_ids: ["evidence-1"] } };
+    if (name === "review" && args.operation === "submit") {
+      inReview = true;
+      return { decision: "IN_REVIEW" };
+    }
     if (name === "review" && args.operation === "approve") {
       if (!confirm) return { status: "confirmation_required",
         reasons: ["Approval publishes this draft as a permanent fact revision."] };
@@ -134,6 +145,8 @@ it("keeps the graph empty until the person confirms the approval", async () => {
   });
 
   fireEvent.click(await screen.findByRole("button", { name: /draft-1/ }));
+  // Approving requires IN_REVIEW; "Submit for review" is what mkb needs to get there.
+  fireEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
   expect(await screen.findByText(/Approval publishes this draft/)).toBeTruthy();
   expect(screen.getByText("The graph is empty until a draft is approved.")).toBeTruthy();

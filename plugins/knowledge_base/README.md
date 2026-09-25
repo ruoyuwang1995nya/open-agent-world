@@ -42,6 +42,26 @@ card configuration, never sent to the frontend, and never reaches an Agent. The
 card's **MinerU base URL** setting selects the service; it carries no credential.
 The standalone service reads the same variable from its own environment.
 
+## The Knowledge research formation
+
+The card is most useful with someone to ask about it. The plugin registers a Legion
+preset, **Knowledge research**, in the Legion deck: deploying it places a knowledge
+base, a **Librarian** Agent and a Conversation, already wired and already laid out —
+the conversation as a narrow sidebar, then Sources over Jobs, then markdown and
+schemas over projections, review and the graph.
+
+**You drive the pipeline; the Librarian only reads.** Uploading a PDF, running a
+projection, building a draft and approving it are buttons in the workspace, in that
+order. The Librarian holds **Knowledge read** and nothing else: it can tell you what
+the base contains, read a converted document back to you and query the published
+graph, but it cannot ingest, project, draft or approve. Nothing enters the graph
+except by your click.
+
+Saving your own knowledge Legion works too, but note what a copy is: the node type is
+templateable while the database is not captured, so **a deployed copy is an empty
+knowledge base** with the same name and wiring — no sources, no facts, and settings
+back at their defaults. This is the same promise the card's deletion warning makes.
+
 ## Using the card
 
 Open the **Knowledge base** pack in the card library, place a card, then open its
@@ -59,7 +79,9 @@ workspace.
 5. **Review** — read the proposed graph, then submit, reject, or approve.
    Approving asks for an explicit confirmation and is the **only** thing that
    writes the knowledge graph.
-6. **Graph** — search published entities by name and traverse outward from one.
+6. **Graph** — the published graph, drawn as a map: click an entity to read its
+   type and properties beside it, double-click to traverse outward from it. The
+   name filter and the entity list stay beside the map.
 
 Model output is never presented as fact. A projection and a draft are candidates;
 a published fact revision is what an approval produces, and every published entity
