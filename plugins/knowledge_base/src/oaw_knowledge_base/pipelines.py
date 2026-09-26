@@ -75,6 +75,13 @@ def _index(context, state):
                 output_type="record", output_id=record_id, source_id=source_id,
                 artifact_id=artifact_id, locator={"kind": "document", "path": source.filename},
                 excerpt=text[:500], evidence_id=evidence_id)
+    # Outside the MKB transaction: this is the plugin's own table on its own engine,
+    # and re-indexing is idempotent (it replaces this record's chunks wholesale), so a
+    # retried step never leaves duplicate or stale chunks behind.
+    from .search_store import index_record
+
+    index_record(kb.oaw_engine, record_id=record_id, source_id=source_id,
+                group_id=collection_id, text=text)
     context.log("Linked markdown record to its source")
     return {"record_id": str(record_id), "evidence_id": str(evidence_id)}
 

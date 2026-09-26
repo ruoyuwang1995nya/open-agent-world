@@ -24,6 +24,18 @@
 .knowledge-settings-section > label, .knowledge-settings-section > small, .knowledge-settings-section > p { margin: 8px 0 0; max-width: 340px; }
 .knowledge-settings-section small, .knowledge-settings-section p { color: var(--ink-soft); font-size: 11px; line-height: 1.5; }
 
+/* The left rail switches which workflow (Literature/Experiment/Settings) is showing;
+ * the tab strip beneath the toolbar then switches within whichever one is active. Both
+ * replace what used to be the generic multi-card tab bar, which had no way to hide a
+ * whole group of tabs conditionally. */
+.knowledge-layout { display: flex; flex: 1; min-height: 0; }
+.knowledge-rail { display: flex; flex-direction: column; gap: 2px; padding: 14px 10px; border-right: 1px solid var(--line); min-width: 130px; align-self: flex-start; position: sticky; top: 0; }
+.knowledge-rail button { text-align: left; border-color: transparent; background: transparent; }
+.knowledge-rail button[aria-pressed="true"] { background: #8a6fd120; border-color: #8a6fd155; color: var(--knowledge-accent); font-weight: 600; }
+.knowledge-content { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.knowledge-tabstrip { display: flex; gap: 4px; flex-wrap: wrap; padding: 12px 14px 0; }
+.knowledge-tabstrip button[aria-pressed="true"] { background: #8a6fd120; border-color: #8a6fd155; }
+
 .knowledge-error { color: var(--danger); background: var(--danger-soft); border: 1px solid var(--danger); border-radius: 6px; padding: 10px; margin: 0 14px; overflow-wrap: anywhere; }
 .knowledge-notice { color: var(--knowledge-accent); background: #8a6fd112; border: 1px solid #8a6fd140; border-radius: 6px; padding: 10px; margin: 0 14px; }
 .knowledge-empty { color: var(--ink-soft); line-height: 1.6; }
@@ -48,7 +60,10 @@
 .knowledge-list button[aria-pressed=true] { background: #8a6fd120; border-color: #8a6fd155; }
 .knowledge-checkrow { display: flex; align-items: center; gap: 8px; }
 .knowledge-checkrow > label { flex-direction: row; }
-.knowledge-checkrow > button { flex: 1; min-width: 0; }
+.knowledge-checkrow > button, .knowledge-checkrow-label { flex: 1; min-width: 0; }
+.knowledge-checkrow > button.knowledge-viewmarkdown { flex: 0 0 auto; width: auto; align-items: center; }
+.knowledge-checkrow-label { display: flex; flex-direction: column; gap: 2px; }
+.knowledge-checkrow-label small { color: var(--ink-soft); font-size: 11px; }
 .knowledge-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 .knowledge-upload { font-size: 12px; }

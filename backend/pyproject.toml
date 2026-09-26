@@ -22,6 +22,7 @@ litellm = ["litellm>=1.74,<2"]
 knowledge = [
     "mat-know-base",
     "pymupdf4llm>=0.0.17",
+    "openpyxl>=3.1,<4",
 ]
 
 [tool.uv.sources]

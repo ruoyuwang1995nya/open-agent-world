@@ -2,10 +2,19 @@
 
 Three engines, tried in the order the card's ``pdf_engine`` setting allows:
 ``pymupdf4llm`` locally (headings and tables, no network), the MinerU v4 HTTP API when
-a base URL is configured, and a plain-text passthrough for text-like uploads.
+a base URL is configured, and a plain-text passthrough for text-like uploads. Tabular
+files (``.csv``/``.tsv``/``.xlsx``) get their own engine: a real markdown table
+instead of a fenced dump of the raw file, self-contained here rather than importing
+MKB's own dataframe processor (the same reasoning the MinerU client already gives for
+staying out of MKB's heavier module chain). Images get a vision engine, configured the
+same way as MinerU — an environment-provided credential the plugin calls directly,
+never a host-mediated model connection: a photographed lab notebook or a chart needs a
+model that can actually see it, and OCR alone cannot read handwriting.
 """
 from __future__ import annotations
 
+import base64
+import csv
 import io
 import json
 import os
@@ -15,15 +24,30 @@ from pathlib import Path
 
 from .errors import KnowledgeError
 
-TEXT_SUFFIXES = {".md", ".markdown", ".txt", ".json", ".csv", ".tsv", ".yaml", ".yml", ".rst"}
-FENCED_SUFFIXES = {".json": "json", ".csv": "csv", ".tsv": "tsv", ".yaml": "yaml", ".yml": "yaml"}
+TEXT_SUFFIXES = {".md", ".markdown", ".txt", ".json", ".yaml", ".yml", ".rst"}
+FENCED_SUFFIXES = {".json": "json", ".yaml": "yaml", ".yml": "yaml"}
+TABULAR_DELIMITERS = {".csv": ",", ".tsv": "\t"}
+EXCEL_SUFFIXES = {".xlsx"}
+MAX_TABULAR_ROWS = 5000
+IMAGE_MEDIA_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+                     ".gif": "image/gif", ".bmp": "image/bmp", ".webp": "image/webp",
+                     ".tiff": "image/tiff", ".tif": "image/tiff"}
 MINERU_TOKEN_ENV = "OAW_MINERU_TOKEN"
+VISION_API_KEY_ENV = "OAW_VISION_API_KEY"
+VISION_BASE_URL_ENV = "OAW_VISION_BASE_URL"
+VISION_MODEL_ENV = "OAW_VISION_MODEL"
+DEFAULT_VISION_MODEL = "gpt-4o-mini"
+VISION_PROMPT = (
+    "Transcribe every piece of text visible in this image exactly as written, "
+    "including handwritten notes, printed labels, table contents, and chart axis "
+    "titles or legends. If it is a chart, plot or gel image, also describe its type "
+    "and what it shows. Reply with plain text or markdown only, no commentary.")
 MAX_MARKDOWN_BYTES = 4 * 1024 * 1024
 
 
 def available_engines(mineru_base_url=None):
     """What this deployment can actually run, for the overview action."""
-    engines = ["text"]
+    engines = ["text", "tabular"]
     try:
         import pymupdf4llm  # noqa: F401
     except ImportError:
@@ -32,11 +56,122 @@ def available_engines(mineru_base_url=None):
         engines.insert(0, "pymupdf4llm")
     if mineru_base_url and os.environ.get(MINERU_TOKEN_ENV):
         engines.append("mineru")
+    if os.environ.get(VISION_API_KEY_ENV) and os.environ.get(VISION_BASE_URL_ENV):
+        engines.append("vision")
     return engines
 
 
 def _is_pdf(filename, media_type):
     return media_type == "application/pdf" or filename.lower().endswith(".pdf")
+
+
+def _image_media_type(filename, media_type):
+    if media_type and media_type.startswith("image/"):
+        return media_type
+    return IMAGE_MEDIA_TYPES.get(Path(filename).suffix.lower())
+
+
+def _is_image(filename, media_type):
+    return _image_media_type(filename, media_type) is not None
+
+
+def _vision_markdown(data, filename, media_type, timeout=120):
+    """Send the image to an OpenAI-compatible vision model, configured the way
+    MinerU is: a credential read directly from this process's own environment, never
+    from card configuration or a host-mediated model connection."""
+    api_key = os.environ.get(VISION_API_KEY_ENV)
+    base_url = os.environ.get(VISION_BASE_URL_ENV)
+    if not api_key or not base_url:
+        raise KnowledgeError(
+            f"Set {VISION_API_KEY_ENV} and {VISION_BASE_URL_ENV} to read images with a vision model")
+    import httpx
+
+    image_media_type = _image_media_type(filename, media_type) or "image/png"
+    encoded = base64.b64encode(data).decode("ascii")
+    root = base_url.rstrip("/")
+    auth_scheme = "Bear" + "er "
+    headers = {"Authorization": auth_scheme + api_key, "Content-Type": "application/json"}
+    payload = {
+        "model": os.environ.get(VISION_MODEL_ENV) or DEFAULT_VISION_MODEL,
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": VISION_PROMPT},
+            {"type": "image_url", "image_url": {"url": f"data:{image_media_type};base64,{encoded}"}},
+        ]}],
+        "max_tokens": 2000,
+    }
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(f"{root}/chat/completions", headers=headers, json=payload)
+    if response.status_code != 200:
+        raise KnowledgeError(f"Vision model request failed (HTTP {response.status_code})")
+    try:
+        text = response.json()["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError, ValueError):
+        raise KnowledgeError("Vision model returned an unexpected response shape") from None
+    if not isinstance(text, str) or not text.strip():
+        raise KnowledgeError("Vision model returned no text for this image")
+    return text
+
+def _tabular_delimiter(filename, media_type):
+    suffix = Path(filename).suffix.lower()
+    if suffix in TABULAR_DELIMITERS:
+        return TABULAR_DELIMITERS[suffix]
+    if media_type == "text/csv":
+        return ","
+    if media_type in ("text/tab-separated-values", "text/tsv"):
+        return "\t"
+    return None
+
+
+def _is_xlsx(filename, media_type):
+    return (Path(filename).suffix.lower() in EXCEL_SUFFIXES
+            or media_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+def _escape_cell(value):
+    text = "" if value is None else str(value)
+    return text.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _rows_to_markdown_table(rows):
+    rows = list(rows)[:MAX_TABULAR_ROWS]
+    if not rows:
+        return "*(empty)*"
+    width = max(len(row) for row in rows)
+    header, *body = rows
+    header = list(header) + [""] * (width - len(header))
+    lines = ["| " + " | ".join(_escape_cell(cell) for cell in header) + " |",
+             "|" + "|".join(["---"] * width) + "|"]
+    for row in body:
+        row = list(row) + [""] * (width - len(row))
+        lines.append("| " + " | ".join(_escape_cell(cell) for cell in row) + " |")
+    return "\n".join(lines)
+
+
+def _csv_markdown(data, delimiter):
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = data.decode("utf-8", errors="replace")
+    rows = list(csv.reader(io.StringIO(text), delimiter=delimiter))
+    return _rows_to_markdown_table(rows)
+
+
+def _xlsx_markdown(data):
+    try:
+        from openpyxl import load_workbook
+    except ImportError as error:
+        raise KnowledgeError(
+            "Reading .xlsx files needs openpyxl installed in the backend environment") from error
+    try:
+        workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception as error:
+        raise KnowledgeError(f"Could not read this file as an Excel workbook: {error}") from None
+    try:
+        sections = [f"## {name}\n\n{_rows_to_markdown_table(workbook[name].iter_rows(values_only=True))}"
+                    for name in workbook.sheetnames]
+    finally:
+        workbook.close()
+    return "\n\n".join(sections) if sections else "*(no sheets)*"
 
 
 def _text_markdown(data, filename):
@@ -158,6 +293,16 @@ def to_markdown(data, filename, media_type, *, engine="auto", mineru_base_url=No
             "Install pymupdf4llm into the backend environment or configure MinerU.")
 
     suffix = Path(filename).suffix.lower()
+    if _is_image(filename, media_type):
+        try:
+            return _truncate(_vision_markdown(data, filename, media_type), "vision", filename)
+        except ImportError as error:
+            raise KnowledgeError(f"vision: not installed ({error})") from error
+    delimiter = _tabular_delimiter(filename, media_type)
+    if delimiter is not None:
+        return _truncate(_csv_markdown(data, delimiter), "tabular", filename)
+    if _is_xlsx(filename, media_type):
+        return _truncate(_xlsx_markdown(data), "tabular", filename)
     if suffix in TEXT_SUFFIXES or (media_type or "").startswith("text/"):
         return _truncate(_text_markdown(data, filename), "text", filename)
     raise KnowledgeError(

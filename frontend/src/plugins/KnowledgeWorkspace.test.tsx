@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import type { PluginViewProps } from "./sdk";
@@ -22,7 +22,11 @@ const SOURCE = { id: "source-1", filename: "sintering.md", media_type: "text/mar
 const CONVERTED = { ...SOURCE, markdown: { artifact_id: "artifact-1", size: 2048, engine: "text" },
   record_id: "record-1" };
 const SCHEMA = { id: "schema-1", name: "Process graph", description: "Samples and processes",
-  domain: "materials", version: 1 };
+  domain: "materials", kind: "literature", version: 1 };
+const EXPERIMENT_SCHEMA = { id: "schema-2", name: "Conductivity run", description: null,
+  domain: "materials", kind: "experiment", version: 1 };
+const EXPERIMENT_PROJECTION = { id: "projection-1", schema_id: "schema-2", record_id: "record-1",
+  status: "COMPLETED", valid: true, extracted_at: "2026-09-23T00:00:00Z", summary: "A1" };
 const DOCUMENT = { record_id: "record-1", filename: "sintering.md", engine: "text",
   total_characters: 42, offset: 0, markdown: "# Sintering of Si3N4", has_more: false };
 const DRAFT = { id: "draft-1", status: "DRAFT", revision: 1, created_by: "user:desktop",
@@ -67,6 +71,23 @@ beforeEach(() => {
   }] } });
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+it("still shows sources and groups when an older release has not published \"experiments\"", async () => {
+  // A release published before Experiments existed grants no "experiments" resource
+  // action at all; the deployment bridge answers with a 404-shaped rejection. That
+  // must not blank out every other section's data (regression: refresh() used to
+  // bundle every call into one Promise.all, so one rejection lost everything).
+  const action = open(async name => {
+    if (name === "overview") return overview({ entities: 0 });
+    if (name === "sources") return { sources: [CONVERTED] };
+    if (name === "experiments") throw new Error("This operation is not published");
+    return undefined;
+  });
+
+  const region = within(await screen.findByRole("region", { name: "Sources" }));
+  expect(await region.findByRole("button", { name: /sintering\.md/ })).toBeTruthy();
+  await waitFor(() => expect(action).toHaveBeenCalledWith("experiments", expect.anything(), undefined));
+});
 
 it("uploads a document and reads its markdown once a batch process job finishes", async () => {
   let uploaded = false;
@@ -122,6 +143,44 @@ it("uploads selected files even when resetting the file input clears its FileLis
     filename: "sample.pdf", media_type: "application/pdf" }), undefined));
 });
 
+it("searches converted documents and shows attributable excerpts", async () => {
+  const action = open(async (name, args) => {
+    if (name === "search") return { query: args.query, results: [
+      { source_id: "source-1", filename: "sintering.md", record_id: "record-1",
+        group_id: "group-1", group_name: "Knowledge base",
+        heading_path: "Sintering of Si3N4 > Method", excerpt: "Sintered at 1750 C for 2 hours." },
+    ] };
+    return undefined;
+  });
+  fireEvent.click(await screen.findByRole("tab", { name: "Search" }));
+  const region = within(await screen.findByRole("region", { name: "Search" }));
+
+  fireEvent.change(region.getByPlaceholderText("Search converted documents…"), {
+    target: { value: "sintering temperature" } });
+  fireEvent.click(region.getByRole("button", { name: "Search" }));
+
+  await waitFor(() => expect(action).toHaveBeenCalledWith(
+    "search", expect.objectContaining({ query: "sintering temperature" }), undefined));
+  expect(await region.findByText(/sintering\.md.*Knowledge base/)).toBeTruthy();
+  expect(await region.findByText(/Sintering of Si3N4 > Method.*Sintered at 1750 C/)).toBeTruthy();
+});
+
+it("shows a search error inline instead of crashing the workspace", async () => {
+  const action = open(async name => {
+    if (name === "search") throw new Error("search index is not ready");
+    return undefined;
+  });
+  fireEvent.click(await screen.findByRole("tab", { name: "Search" }));
+  const region = within(await screen.findByRole("region", { name: "Search" }));
+
+  fireEvent.change(region.getByPlaceholderText("Search converted documents…"), {
+    target: { value: "anything" } });
+  fireEvent.click(region.getByRole("button", { name: "Search" }));
+
+  expect(await region.findByText("search index is not ready")).toBeTruthy();
+  expect(action).toHaveBeenCalled();
+});
+
 it("projects the selected document through the host bridge, never the plugin", async () => {
   const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({
     projection: { id: "projection-1", validation: { valid: true } },
@@ -146,7 +205,34 @@ it("projects the selected document through the host bridge, never the plugin", a
   expect(JSON.parse(String(init.body))).toEqual({
     schema_id: "schema-1", model: "oaw:model:model-1", record_id: "record-1" });
   expect(action.mock.calls.some(([name]) => name === "save_projection")).toBe(false);
-  expect(await screen.findByText("Projection projection-1 saved")).toBeTruthy();
+  expect(await within(await screen.findByRole("region", { name: "Sources" }))
+    .findByText("Projection projection-1 saved")).toBeTruthy();
+});
+
+it("assembles an experiment record from selected projections through the host bridge", async () => {
+  const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({
+    record: { id: "record-x", name: "A1", status: "draft", revision: 1,
+      data: { sample_id: "A1", conductivity: 1.3 }, conflicts: [] } }) }));
+  vi.stubGlobal("fetch", fetchMock);
+  const action = open(async name => {
+    if (name === "schemas") return { schemas: [EXPERIMENT_SCHEMA] };
+    if (name === "projections") return { projections: [EXPERIMENT_PROJECTION] };
+    if (name === "experiments") return { experiments: [] };
+    return undefined;
+  });
+
+  fireEvent.click(await screen.findByRole("button", { name: "Experiment" }));
+  const region = within(await screen.findByRole("region", { name: "Experiments" }));
+  fireEvent.click(region.getByLabelText("Select projection projection-1"));
+  fireEvent.click(region.getByRole("button", { name: "Assemble experiment record from 1 selected" }));
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+  const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+  expect(url).toBe("/api/knowledge/card-1/assemble");
+  expect(JSON.parse(String(init.body))).toEqual({
+    projection_ids: ["projection-1"], model: "oaw:model:model-1" });
+  expect(action.mock.calls.some(([name]) => name === "experiment_save")).toBe(false);
+  expect(await region.findByText(/Experiment record "A1" assembled/)).toBeTruthy();
 });
 
 it("keeps the graph empty until the person confirms the approval", async () => {
@@ -174,16 +260,21 @@ it("keeps the graph empty until the person confirms the approval", async () => {
     return undefined;
   });
 
+  fireEvent.click(await screen.findByRole("tab", { name: "Review" }));
   fireEvent.click(await screen.findByRole("button", { name: /draft-1/ }));
   // Approving requires IN_REVIEW; "Submit for review" is what mkb needs to get there.
   fireEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
   expect(await screen.findByText(/Approval publishes this draft/)).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("tab", { name: "Graph" }));
   expect(screen.getByText("The graph is empty until a draft is approved.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("tab", { name: "Review" }));
 
   fireEvent.click(screen.getByRole("button", { name: "Confirm and publish" }));
   await waitFor(() => expect(action).toHaveBeenCalledWith("review", expect.objectContaining({
     operation: "approve", draft_id: "draft-1", expected_revision: 1 }), true));
+  fireEvent.click(screen.getByRole("tab", { name: "Graph" }));
   expect(await screen.findByRole("button", { name: /Si3N4/ })).toBeTruthy();
 });
 
@@ -236,5 +327,6 @@ it("hides engineering settings and posts through the deployment bridge when depl
   expect(url).toBe("/api/runtime-app/workspace/knowledge/card-1/project");
   expect(JSON.parse(String(init.body))).toEqual({
     schema_id: "schema-1", model: "oaw:model:model-1", record_id: "record-1" });
-  expect(await screen.findByText("Projection projection-1 saved")).toBeTruthy();
+  expect(await within(await screen.findByRole("region", { name: "Sources" }))
+    .findByText("Projection projection-1 saved")).toBeTruthy();
 });

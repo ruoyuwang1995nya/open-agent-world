@@ -43,6 +43,14 @@ class ProjectionRequest(BaseModel):
     notes: str | None = Field(default=None, max_length=2000)
 
 
+class ExperimentAssembleRequest(BaseModel):
+    projection_ids: list[str] = Field(min_length=1, max_length=50)
+    model: str = Field(min_length=1, max_length=200)
+    name: str | None = Field(default=None, max_length=500)
+    record_id: str | None = Field(default=None, max_length=64)
+    expected_revision: int | None = None
+
+
 def _credentials(services, reference):
     if reference.startswith(MODEL_REF_PREFIX):
         try:
@@ -96,6 +104,57 @@ async def run_projection(node_id: str, request: ProjectionRequest, services) -> 
             "record_id": prompt["record_id"]}
 
 
+def _experiment_prompt_builders():
+    try:
+        from oaw_knowledge_base.experiment_prompt import build_messages, parse_assemble
+    except ImportError:  # pragma: no cover - the route is dead without the plugin
+        raise HTTPException(503, "The knowledge base plugin is not available") from None
+    return build_messages, parse_assemble
+
+
+async def run_experiment_assemble(node_id: str, request: ExperimentAssembleRequest, services) -> dict:
+    """Merge several per-file extractions into one experiment record with one model
+    call — the same shape as ``run_projection``, for the same reason: only the
+    caller may hold model credentials, and the plugin owns the write regardless."""
+    async with services._node_mutation(read_only=True):
+        if services.world.get_card(node_id).type != NODE_TYPE:
+            raise HTTPException(422, "Expected a Knowledge base node")
+
+    prompt = await invoke_resource_action(services, node_id, "experiment_assemble_prompt",
+        ResourceActionRequest(arguments={"projection_ids": request.projection_ids}))
+    base_url, api_key, model = _credentials(services, request.model)
+    build_messages, parse_assemble = _experiment_prompt_builders()
+
+    try:
+        async with httpx.AsyncClient(timeout=180, follow_redirects=False) as client:
+            response = await client.post(base_url.rstrip("/") + "/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"} if api_key and api_key != "oaw-no-auth" else {},
+                json={"model": model, "response_format": {"type": "json_object"},
+                      "messages": build_messages(prompt)})
+        if response.status_code != 200:
+            raise HTTPException(502, f"The model returned HTTP {response.status_code}; check the model, quota and connection settings")
+        merged = parse_assemble(response.json()["choices"][0]["message"]["content"])
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+        raise HTTPException(502, "The assemble request failed or returned malformed JSON; check the connection and retry") from None
+
+    evidence = [{"projection_id": item["projection_id"], "source_id": item["source_id"],
+                "artifact_id": item["artifact_id"]} for item in prompt["contributions"]]
+    saved = await invoke_resource_action(services, node_id, "experiment_save",
+        ResourceActionRequest(arguments={
+            "schema_id": prompt["schema_id"], "group_id": prompt["group_id"],
+            "name": request.name or prompt["suggested_name"], "data": merged["data"],
+            "conflicts": merged["conflicts"], "evidence": evidence,
+            "record_id": request.record_id, "expected_revision": request.expected_revision}))
+    return {"record": saved["record"]}
+
+
 @router.post("/knowledge/{node_id}/project")
 async def project(node_id: str, request: ProjectionRequest, services=Depends(get_services)):
     return await run_projection(node_id, request, services)
+
+
+@router.post("/knowledge/{node_id}/assemble")
+async def assemble(node_id: str, request: ExperimentAssembleRequest, services=Depends(get_services)):
+    return await run_experiment_assemble(node_id, request, services)

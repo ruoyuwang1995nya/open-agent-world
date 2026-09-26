@@ -40,6 +40,8 @@ OPERATIONS: tuple[Operation, ...] = (
         description="List uploaded sources with their markdown conversion status, record id and projection count. Use the returned source_id or record_id with knowledge_markdown and knowledge_projection_prompt."),
     Operation("markdown", actions.markdown, actions.Markdown, tool_name="knowledge_markdown",
         description="Read the markdown extracted from one source, by source_id or record_id. Long documents are windowed: use offset and limit and follow has_more to page through."),
+    Operation("search", actions.search, actions.Search, tool_name="knowledge_document_search",
+        description="Full-text search across every converted document's markdown. Returns ranked excerpts, each with the source filename and the heading it falls under — raw document text, not a verified fact. Use this to answer document-level questions across many sources at once instead of reading one document from the top with knowledge_markdown."),
     Operation("schemas", actions.schemas, actions.Schemas, tool_name="knowledge_schemas",
         description="List, read, create or update extraction schemas. A schema is a JSON Schema object plus the system prompt used to project markdown into structured JSON. Reuse an existing schema when one fits instead of creating a near-duplicate."),
     Operation("projection_prompt", actions.projection_prompt, actions.ProjectionPrompt,
@@ -53,6 +55,18 @@ OPERATIONS: tuple[Operation, ...] = (
         description="List stored projections, or read one in full with its evidence links. Use this to review extracted data before building a draft."),
     Operation("draft", actions.draft, actions.Draft, tool_name="knowledge_draft",
         description="List or read draft graphs, or create a new draft from selected projections. A draft is proposed knowledge awaiting human review; creating one never changes the published graph."),
+    Operation("experiment_assemble_prompt", actions.experiment_assemble_prompt, actions.ExperimentAssemblePrompt,
+        tool_name="knowledge_experiment_assemble_prompt",
+        description="Get everything needed to merge several per-file extractions (projections against one kind=\"experiment\" schema) into one experiment record: the schema definition and each contributing projection's data and source. Produce the merged JSON, then submit it with knowledge_experiment_save."),
+    Operation("experiment_save", actions.experiment_save, actions.ExperimentSave,
+        tool_name="knowledge_experiment_save",
+        description="Store a merged experiment record built from several projections, linking every contributing file as evidence. An experiment record never touches a draft, review or the published graph — it is confirmed or edited directly with knowledge_experiments."),
+    Operation("experiments", actions.experiments, actions.Experiments,
+        tool_name="knowledge_experiments",
+        description="List or read experiment records — structured entities assembled from several uploaded files (e.g. a spreadsheet, a photographed notebook page and a paper) describing one experiment. Use this to compare experiments directly instead of the knowledge graph."),
+    Operation("experiment_update", actions.experiment_update, actions.ExperimentUpdate,
+        tool_name="knowledge_experiment_update",
+        description="Confirm or hand-edit one experiment record. Never touches a draft, review or the published graph."),
     Operation("graph", actions.graph, actions.GraphQuery, tool_name="knowledge_graph",
         description="Query the published knowledge graph by entity type, relation type or name, or traverse outward from one entity. Only human-approved facts appear here."),
     Operation("jobs", actions.jobs, actions.Jobs, tool_name="knowledge_jobs",
@@ -73,8 +87,10 @@ OPERATIONS: tuple[Operation, ...] = (
 BY_NAME: dict[str, Operation] = {operation.name: operation for operation in OPERATIONS}
 AGENT_OPERATIONS: tuple[Operation, ...] = tuple(item for item in OPERATIONS if item.agent)
 
-READ_ACTIONS = ("overview", "sources", "markdown", "schemas", "projections", "graph", "jobs")
-EXTRACT_ACTIONS = READ_ACTIONS + ("projection_prompt", "save_projection", "draft")
+READ_ACTIONS = ("overview", "sources", "markdown", "search", "schemas", "projections",
+               "experiments", "graph", "jobs")
+EXTRACT_ACTIONS = READ_ACTIONS + ("projection_prompt", "save_projection", "draft",
+                                 "experiment_assemble_prompt", "experiment_save", "experiment_update")
 
 
 def tool_manifest() -> list[dict]:

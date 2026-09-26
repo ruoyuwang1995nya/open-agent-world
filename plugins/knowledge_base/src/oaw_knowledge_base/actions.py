@@ -411,7 +411,64 @@ def markdown(context, arguments):
     })
 
 
+# ---------------------------------------------------------------- search
+
+
+class Search(Request):
+    query: str = Field(min_length=1, max_length=2000)
+    limit: int = Field(default=8, ge=1, le=20)
+    group_id: str | None = None
+    all_groups: bool = False
+
+
+def search(context, arguments):
+    """Full-text search over every converted document's markdown.
+
+    Returns raw passages from the document text, ranked by keyword match — never a
+    verified fact. A caller (agent or person) must attribute an answer built from
+    these results to the ``filename``/``heading_path`` returned with each one.
+    """
+    request = Search.model_validate(arguments)
+    kb, group, _ = _base(context, request.group_id)
+    scope = _scope(group, request.all_groups)
+    from .search_store import search as search_chunks
+
+    names = {str(item.id): item.name for item in kb.collections.list(limit=500)}
+    filenames: dict[str, str | None] = {}
+    results = []
+    for hit in search_chunks(kb.oaw_engine, request.query, limit=request.limit, group_id=scope):
+        source_id = hit["source_id"]
+        if source_id not in filenames:
+            try:
+                filenames[source_id] = kb.sources.require(source_id).filename
+            except Exception:
+                # A source can be gone by the time its chunk surfaces; the excerpt
+                # and heading still stand on their own, just without a filename.
+                filenames[source_id] = None
+        results.append({
+            "source_id": source_id, "filename": filenames[source_id],
+            "record_id": hit["record_id"], "group_id": hit["group_id"],
+            "group_name": names.get(hit["group_id"]),
+            "heading_path": hit["heading_path"] or None,
+            "excerpt": hit["text"][:800],
+        })
+    return _bounded({"query": request.query, "results": results})
+
+
 # ---------------------------------------------------------------- schemas
+
+
+SCHEMA_KINDS = ("literature", "experiment")
+
+
+def _schema_kind(schema):
+    """MKB's own ``purpose`` field, read back as one of OAW's two workflow kinds.
+
+    Every schema created before this existed has ``purpose="freeform"`` (MKB's own
+    default): treat anything that is not explicitly ``"experiment"`` as literature, so
+    no migration is needed for schemas that already exist.
+    """
+    return "experiment" if schema.purpose == "experiment" else "literature"
 
 
 class Schemas(Request):
@@ -423,11 +480,15 @@ class Schemas(Request):
     definition: dict[str, Any] | None = None
     system_prompt: str | None = Field(default=None, max_length=20_000)
     field_descriptions: dict[str, Any] | None = None
+    # For "list": filters to one kind, or every schema when omitted. For "create": the
+    # kind to tag the new schema with (defaults to "literature"). For "update": the kind
+    # to retag it as, or leave unchanged when omitted.
+    kind: Literal["literature", "experiment"] | None = None
 
 
 def _schema_json(schema):
     return {"id": str(schema.id), "name": schema.name, "description": schema.description,
-            "domain": schema.domain, "version": schema.version,
+            "domain": schema.domain, "kind": _schema_kind(schema), "version": schema.version,
             "definition": schema.definition, "system_prompt": schema.system_prompt,
             "field_descriptions": schema.field_descriptions}
 
@@ -436,10 +497,13 @@ def schemas(context, arguments):
     request = Schemas.model_validate(arguments)
     kb, _, _ = _base(context)
     if request.operation == "list":
+        items = kb.schemas.list(limit=100)
+        if request.kind is not None:
+            items = [s for s in items if _schema_kind(s) == request.kind]
         return _bounded({"schemas": [
             {"id": str(s.id), "name": s.name, "description": s.description,
-             "domain": s.domain, "version": s.version}
-            for s in kb.schemas.list(limit=100)]})
+             "domain": s.domain, "kind": _schema_kind(s), "version": s.version}
+            for s in items]})
     if request.operation == "get":
         if not request.schema_id:
             raise KnowledgeError("schema_id is required")
@@ -452,7 +516,8 @@ def schemas(context, arguments):
         schema = kb.schemas.create(
             name=request.name, domain=request.domain, definition=request.definition,
             system_prompt=request.system_prompt, description=request.description,
-            field_descriptions=request.field_descriptions)
+            field_descriptions=request.field_descriptions,
+            purpose=request.kind or "literature")
         return _bounded({"schema": _schema_json(schema)})
     if not request.schema_id:
         raise KnowledgeError("schema_id is required")
@@ -461,7 +526,7 @@ def schemas(context, arguments):
     schema = kb.schemas.update(
         request.schema_id, name=request.name, description=request.description,
         definition=request.definition, system_prompt=request.system_prompt,
-        field_descriptions=request.field_descriptions)
+        field_descriptions=request.field_descriptions, purpose=request.kind)
     return _bounded({"schema": _schema_json(schema)})
 
 
@@ -657,6 +722,151 @@ def _projections_group(kb, projection_ids):
             "Select projections from a single group to build one draft")
     return uuid.UUID(next(iter(group_ids)))
 
+
+# ---------------------------------------------------------------- experiments
+
+
+EXPERIMENT_MERGE_PROMPT = (
+    "You merge several structured extractions, each taken from a different file "
+    "describing the same experiment, into one canonical record matching the given "
+    "JSON Schema. When sources genuinely disagree on a field's value, still choose "
+    "your best answer for \"data\", but list every disagreeing value under "
+    "\"conflicts\" so a person can resolve it. Respond with exactly this JSON shape: "
+    "{\"data\": <object matching the schema>, \"conflicts\": "
+    "[{\"field\": <field name>, \"values\": [{\"value\": <value>, \"source_id\": <source id>}]}]}"
+    ". Include a field under \"conflicts\" only when sources disagree on it.")
+
+
+class ExperimentAssemblePrompt(Request):
+    projection_ids: list[str] = Field(min_length=1, max_length=50)
+
+
+def experiment_assemble_prompt(context, arguments):
+    """Everything needed to merge several per-file extractions into one experiment
+    record: the schema's definition and every contributing projection's data and
+    source. A caller (the host bridge, or an agent) produces the merged JSON, then
+    submits it with experiment_save — the same two-step shape projection_prompt and
+    save_projection already use, for the same reason: only the caller may hold model
+    credentials, and the plugin owns the write regardless of who called."""
+    request = ExperimentAssemblePrompt.model_validate(arguments)
+    kb = open_client(context.node_id, context.storage_path)
+    group_id = _projections_group(kb, request.projection_ids)
+    items = [kb.projections.require(_uuid(pid, "projection_id")) for pid in request.projection_ids]
+    schema_ids = {str(item.schema_id) for item in items}
+    if len(schema_ids) > 1:
+        raise KnowledgeError("Select projections extracted with a single experiment schema")
+    schema = kb.schemas.require(next(iter(schema_ids)))
+    if _schema_kind(schema) != "experiment":
+        raise KnowledgeError('Only a schema tagged kind="experiment" can build an experiment record')
+
+    contributions = []
+    for item in items:
+        links = kb.evidence.list(output_id=item.id, limit=5)
+        source_id = str(links[0].source_id) if links else None
+        filename = kb.sources.require(source_id).filename if source_id else None
+        contributions.append({
+            "projection_id": str(item.id), "source_id": source_id,
+            "artifact_id": str(links[0].artifact_id) if links else None,
+            "filename": filename, "data": item.data})
+
+    return _bounded({
+        "group_id": str(group_id), "schema_id": str(schema.id), "schema_name": schema.name,
+        "definition": schema.definition, "system_prompt": EXPERIMENT_MERGE_PROMPT,
+        "contributions": contributions,
+        "suggested_name": (contributions[0]["filename"] if contributions else None) or schema.name,
+    })
+
+
+class ExperimentSave(Request):
+    schema_id: str
+    group_id: str
+    name: str = Field(min_length=1, max_length=500)
+    data: dict[str, Any]
+    conflicts: list[dict[str, Any]] = Field(default_factory=list)
+    evidence: list[dict[str, Any]] = Field(min_length=1, max_length=50)
+    record_id: str | None = None
+    expected_revision: int | None = None
+
+
+def experiment_save(context, arguments):
+    """Store a merged experiment record and its evidence links. Re-assembling an
+    existing record (``record_id`` given) replaces its evidence wholesale, so a
+    record's evidence always matches whichever projections most recently produced it."""
+    request = ExperimentSave.model_validate(arguments)
+    kb = open_client(context.node_id, context.storage_path)
+    schema = kb.schemas.require(request.schema_id)
+    if _schema_kind(schema) != "experiment":
+        raise KnowledgeError('Only a schema tagged kind="experiment" can build an experiment record')
+    validation = _check(schema.definition, request.data)
+    links = [{"projection_id": item.get("projection_id"), "source_id": item.get("source_id"),
+             "artifact_id": item.get("artifact_id")} for item in request.evidence
+             if item.get("projection_id") and item.get("source_id")]
+    if not links:
+        raise KnowledgeError("At least one valid evidence link (projection_id and source_id) is required")
+
+    if request.record_id:
+        record = kb.oaw_experiments.update(
+            request.record_id, name=request.name, data=request.data,
+            conflicts=request.conflicts, expected_revision=request.expected_revision)
+    else:
+        record = kb.oaw_experiments.create(
+            group_id=_uuid(request.group_id, "group_id"), schema_id=request.schema_id,
+            name=request.name, data=request.data, conflicts=request.conflicts,
+            created_by=_actor(context))
+    kb.oaw_experiments.set_evidence(record["id"], links)
+    return _bounded({"record": {**record, "validation": validation}})
+
+
+class Experiments(Request):
+    operation: Literal["list", "get"] = "list"
+    record_id: str | None = None
+    group_id: str | None = None
+    all_groups: bool = False
+    schema_id: str | None = None
+    status: Literal["draft", "confirmed"] | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+def experiments(context, arguments):
+    """List or read experiment records — structured entities assembled from several
+    uploaded files. Read-only: confirming or editing one is knowledge_experiment_update."""
+    request = Experiments.model_validate(arguments)
+    kb, group, _ = _base(context, request.group_id)
+    if request.operation == "list":
+        scope = _scope(group, request.all_groups)
+        items = kb.oaw_experiments.list(
+            group_id=str(scope) if scope else None, schema_id=request.schema_id,
+            status=request.status, limit=request.limit)
+        return _bounded({"experiments": items})
+    if not request.record_id:
+        raise KnowledgeError("record_id is required")
+    record = kb.oaw_experiments.require(request.record_id)
+    record = {**record, "evidence": kb.oaw_experiments.evidence_for(request.record_id)}
+    return _bounded({"experiment": record})
+
+
+class ExperimentUpdate(Request):
+    operation: Literal["confirm", "update"] = "update"
+    record_id: str
+    name: str | None = Field(default=None, max_length=500)
+    data: dict[str, Any] | None = None
+    expected_revision: int | None = None
+
+
+def experiment_update(context, arguments):
+    """Confirm or hand-edit one experiment record. Never touches a draft, a review
+    or the published graph — an experiment record is its own object from start to
+    finish, exactly as the design keeps the knowledge graph optional."""
+    request = ExperimentUpdate.model_validate(arguments)
+    kb = open_client(context.node_id, context.storage_path)
+    if request.operation == "confirm":
+        record = kb.oaw_experiments.update(
+            request.record_id, status="confirmed", expected_revision=request.expected_revision)
+    else:
+        record = kb.oaw_experiments.update(
+            request.record_id, name=request.name, data=request.data,
+            expected_revision=request.expected_revision)
+    return _bounded({"experiment": record})
 
 
 SLUG = re.compile(r"[^a-z0-9]+")

@@ -1,4 +1,4 @@
-import { t, useLocale, WorkspaceSection, useWorkspaceSections } from "@oaw/plugin-api";
+import { t, useLocale, WorkspaceSection } from "@oaw/plugin-api";
 import type { FrontendPlugin, PluginViewProps } from "@oaw/plugin-api";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useWorldStore } from "../../../frontend/src/state/worldStore";
@@ -17,7 +17,8 @@ type Source = { id: string; filename: string; media_type: string; size: number; 
   record_id: string | null; projections: number };
 type Extracted = { record_id: string; filename: string | null; engine: string | null;
   total_characters: number; offset: number; markdown: string; has_more: boolean };
-type SchemaItem = { id: string; name: string; description: string | null; domain: string; version: number };
+type SchemaItem = { id: string; name: string; description: string | null; domain: string;
+  kind: "literature" | "experiment"; version: number };
 type SchemaDetail = SchemaItem & { definition: Record<string, unknown>; system_prompt: string;
   field_descriptions: Record<string, unknown> | null };
 type Projection = { id: string; schema_id: string; record_id: string; status: string;
@@ -36,8 +37,31 @@ type Job = { id: string; kind: string; status: string; progress: number | null; 
   completed_at: string | null };
 type JobEvent = { event: string; step: string | null; message: string | null; level: string | null;
   occurred_at: string };
+type SearchResult = { source_id: string; filename: string | null; record_id: string | null;
+  group_id: string | null; group_name: string | null; heading_path: string | null; excerpt: string };
+type ExperimentConflict = { field: string; values: { value: unknown; source_id: string }[] };
+type ExperimentItem = { id: string; group_id: string; schema_id: string; name: string;
+  data: Record<string, unknown>; conflicts: ExperimentConflict[]; status: "draft" | "confirmed";
+  revision: number; created_by: string | null; created_at: string; updated_at: string };
+type ExperimentDetail = ExperimentItem & {
+  evidence: { record_id: string; projection_id: string; source_id: string; artifact_id: string | null }[] };
 /** An approval the card asked the person to confirm before it publishes a fact. */
 type Pending = { args: Record<string, unknown>; reasons: string[] };
+
+/** Literature stays the deep, general-purpose workflow; Experiment is a small,
+ * shared-infrastructure workflow that reuses Schemas from the same collection.
+ * Settings only ever appears for the engineering view. */
+type Category = "literature" | "experiment" | "settings";
+type LiteratureTab = "sources" | "search" | "schemas" | "projections" | "review" | "graph";
+type ExperimentTab = "experiments" | "schemas";
+const LITERATURE_TABS: { id: LiteratureTab; label: () => string }[] = [
+  { id: "sources", label: () => t("Sources") }, { id: "search", label: () => t("Search") },
+  { id: "schemas", label: () => t("Schemas") }, { id: "projections", label: () => t("Projections") },
+  { id: "review", label: () => t("Review") }, { id: "graph", label: () => t("Graph") },
+];
+const EXPERIMENT_TABS: { id: ExperimentTab; label: () => string }[] = [
+  { id: "experiments", label: () => t("Experiments") }, { id: "schemas", label: () => t("Schemas") },
+];
 
 const ACTIVE = new Set(["QUEUED", "RUNNING", "PENDING", "RETRYING"]);
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -64,6 +88,18 @@ async function request(path: string, body: unknown, deployed: boolean) {
   return data as Record<string, unknown>;
 }
 
+/** The shared error/notice banner, duplicated at the top of every section so it is
+ * visible whichever one is showing — the alternative (once, in the shared toolbar)
+ * is invisible whenever a layout extracts every section into its own tab, exactly
+ * the shape the "Knowledge research" preset uses. */
+function Banner({ error, notice }: { error: string; notice: string }) {
+  if (!error && !notice) return null;
+  return <>
+    {error && <p role="alert" className="knowledge-error">{error}</p>}
+    {notice && <p role="status" className="knowledge-notice">{notice}</p>}
+  </>;
+}
+
 function Preview({ host, card }: PluginViewProps) {
   useLocale();
   const [summary, setSummary] = useState<Overview>();
@@ -88,7 +124,11 @@ function Preview({ host, card }: PluginViewProps) {
 
 export function Workspace({ host, card }: PluginViewProps) {
   useLocale();
-  const sections = useWorkspaceSections();
+  // The left rail switches which workflow is visible; each workflow remembers its
+  // own last-opened tab so hopping to Experiment and back does not lose your place.
+  const [category, setCategory] = useState<Category>("literature");
+  const [literatureTab, setLiteratureTab] = useState<LiteratureTab>("sources");
+  const [experimentTab, setExperimentTab] = useState<ExperimentTab>("experiments");
   const [overview, setOverview] = useState<Overview>();
   const [sources, setSources] = useState<Source[]>([]);
   const [schemas, setSchemas] = useState<SchemaItem[]>([]);
@@ -107,11 +147,19 @@ export function Workspace({ host, card }: PluginViewProps) {
   const [selectedSource, setSelectedSource] = useState("");
   const [extracted, setExtracted] = useState<Extracted>();
   const [documentError, setDocumentError] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[]>();
+  const [searchError, setSearchError] = useState("");
   const [schemaId, setSchemaId] = useState("");
-  const [editor, setEditor] = useState<{ id: string; name: string; description: string; system_prompt: string; definition: string }>();
+  const [editor, setEditor] = useState<{ id: string; name: string; description: string;
+    system_prompt: string; definition: string; kind: "literature" | "experiment" }>();
   const [chosen, setChosen] = useState<string[]>([]);
   const [projection, setProjection] = useState<ProjectionDetail>();
   const [draftDetail, setDraftDetail] = useState<DraftDetail>();
+  const [chosenExperiment, setChosenExperiment] = useState<string[]>([]);
+  const [experiments, setExperiments] = useState<ExperimentItem[]>([]);
+  const [experimentDetail, setExperimentDetail] = useState<ExperimentDetail>();
+  const [experimentDataDraft, setExperimentDataDraft] = useState("");
   const [reviewNotes, setReviewNotes] = useState("");
   const [pending, setPending] = useState<Pending>();
   const [notice, setNotice] = useState("");
@@ -148,22 +196,40 @@ export function Workspace({ host, card }: PluginViewProps) {
   const groupFilter = useCallback((): Record<string, unknown> =>
     activeGroup ? { group_id: activeGroup } : {}, [activeGroup]);
 
+  // Select a source for the extracted-markdown/projection panel and jump to the
+  // Sources tab, wherever the click that asked for it happened — a search result
+  // or a projection's evidence link both point at a source, not at the tab.
+  const viewSource = useCallback((id: string) => {
+    setSelectedSource(id); setSchemaId(schemaId || schemas[0]?.id || "");
+    setCategory("literature"); setLiteratureTab("sources");
+  }, [schemaId, schemas]);
+
   const refresh = useCallback(async () => {
     const current = generation.current;
-    const [summary, sourceList, schemaList, projectionList, draftList, jobList] = await Promise.all([
+    // Settled, not all-or-nothing: an older release may not have "experiments"
+    // published yet (or any single call could hiccup), and that must not wipe out
+    // every other section's data — only whichever call actually failed stays empty.
+    const results = await Promise.allSettled([
       call("overview", groupArgs()), call("sources", { limit: 100, ...groupArgs() }),
       call("schemas", { operation: "list" }),
       call("projections", { limit: 100, ...groupArgs() }),
       call("draft", { operation: "list", ...groupArgs() }), call("jobs", { limit: 20, ...groupFilter() }),
+      call("experiments", { limit: 100, ...groupArgs() }),
     ]);
     if (generation.current !== current) return;
-    setOverview(summary as Overview);
-    setSettings((summary as Overview).settings);
-    setSources((sourceList.sources as Source[]) ?? []);
-    setSchemas((schemaList.schemas as SchemaItem[]) ?? []);
-    setProjections((projectionList.projections as Projection[]) ?? []);
-    setDrafts((draftList.drafts as DraftItem[]) ?? []);
-    setJobs((jobList.jobs as Job[]) ?? []);
+    const [summary, sourceList, schemaList, projectionList, draftList, jobList, experimentList] =
+      results.map(result => result.status === "fulfilled" ? result.value : undefined);
+    if (summary) { setOverview(summary as Overview); setSettings((summary as Overview).settings); }
+    if (sourceList) setSources((sourceList.sources as Source[]) ?? []);
+    if (schemaList) setSchemas((schemaList.schemas as SchemaItem[]) ?? []);
+    if (projectionList) setProjections((projectionList.projections as Projection[]) ?? []);
+    if (draftList) setDrafts((draftList.drafts as DraftItem[]) ?? []);
+    if (jobList) setJobs((jobList.jobs as Job[]) ?? []);
+    setExperiments((experimentList?.experiments as ExperimentItem[]) ?? []);
+    // A core section failing is still worth surfacing; "experiments" not being
+    // published on an older release is not a real error, so it never blocks this.
+    const coreFailure = results.slice(0, 6).find(result => result.status === "rejected");
+    if (coreFailure) throw (coreFailure as PromiseRejectedResult).reason;
   }, [call, groupArgs, groupFilter]);
 
   const loadGraph = useCallback(async (args: Record<string, unknown> = {}) => {
@@ -243,6 +309,15 @@ export function Workspace({ host, card }: PluginViewProps) {
     await refresh();
   });
 
+  const runSearch = () => perform(async () => {
+    setSearchError("");
+    if (!searchQuery.trim()) { setSearchResults(undefined); return; }
+    try {
+      const result = await call("search", { query: searchQuery.trim(), ...groupArgs() });
+      setSearchResults(result.results as SearchResult[]);
+    } catch (reason) { setSearchError(message(reason)); setSearchResults(undefined); }
+  });
+
   const createGroup = () => perform(async () => {
     if (!groupName.trim()) throw new Error(t("Name the group first"));
     const result = await call("groups", { operation: "create", name: groupName.trim() });
@@ -291,7 +366,7 @@ export function Workspace({ host, card }: PluginViewProps) {
     try { definition = JSON.parse(editor.definition); }
     catch { throw new Error(t("The schema definition must be valid JSON")); }
     const payload = { name: editor.name, description: editor.description || null,
-      system_prompt: editor.system_prompt, definition };
+      system_prompt: editor.system_prompt, definition, kind: editor.kind };
     const result = editor.id
       ? await call("schemas", { operation: "update", schema_id: editor.id, ...payload })
       : await call("schemas", { operation: "create", ...payload });
@@ -304,7 +379,7 @@ export function Workspace({ host, card }: PluginViewProps) {
     const result = await call("schemas", { operation: "get", schema_id: id });
     const detail = result.schema as SchemaDetail;
     setEditor({ id: detail.id, name: detail.name, description: detail.description ?? "",
-      system_prompt: detail.system_prompt, definition: pretty(detail.definition) });
+      system_prompt: detail.system_prompt, definition: pretty(detail.definition), kind: detail.kind });
   });
 
   const openProjection = (id: string) => perform(async () => {
@@ -327,6 +402,51 @@ export function Workspace({ host, card }: PluginViewProps) {
     setChosen([]);
     await refresh();
     await loadDraft(built.id);
+  });
+
+  const loadExperiment = useCallback(async (id: string) => {
+    const current = generation.current;
+    const result = await call("experiments", { operation: "get", record_id: id });
+    if (generation.current !== current) return;
+    const detail = result.experiment as ExperimentDetail;
+    setExperimentDetail(detail);
+    setExperimentDataDraft(pretty(detail.data));
+  }, [call]);
+
+  const assembleExperiment = () => perform(async () => {
+    if (!chosenExperiment.length) throw new Error(t("Select at least one projection first"));
+    if (!selectedModel) throw new Error(deployed
+      ? t("This deployment has no default model configured yet")
+      : t("Configure a model connection first"));
+    const result = await request(`knowledge/${card.id}/assemble`, {
+      projection_ids: chosenExperiment, model: selectedModel }, deployed);
+    const built = result.record as { id: string; name: string; conflicts: unknown[] };
+    setNotice(built.conflicts.length
+      ? t("Experiment record \"{v0}\" assembled with {v1} field(s) to review", {
+          v0: built.name, v1: built.conflicts.length })
+      : t("Experiment record \"{v0}\" assembled", { v0: built.name }));
+    setChosenExperiment([]);
+    await refresh();
+    await loadExperiment(built.id);
+  });
+
+  const saveExperimentEdits = () => experimentDetail && perform(async () => {
+    let data: Record<string, unknown>;
+    try { data = JSON.parse(experimentDataDraft); }
+    catch { throw new Error(t("The experiment data must be valid JSON")); }
+    await call("experiment_update", { operation: "update", record_id: experimentDetail.id,
+      data, expected_revision: experimentDetail.revision });
+    setNotice(t("Changes saved"));
+    await refresh();
+    await loadExperiment(experimentDetail.id);
+  });
+
+  const confirmExperiment = () => experimentDetail && perform(async () => {
+    await call("experiment_update", { operation: "confirm", record_id: experimentDetail.id,
+      expected_revision: experimentDetail.revision });
+    setNotice(t("Experiment record confirmed"));
+    await refresh();
+    await loadExperiment(experimentDetail.id);
   });
 
   const decide = (operation: "submit" | "approve" | "reject", confirmed?: Pending) =>
@@ -368,7 +488,6 @@ export function Workspace({ host, card }: PluginViewProps) {
 
   const counts = overview?.counts ?? {};
   const current = settings ?? { collection_name: "", pdf_engine: "auto", mineru_base_url: "" };
-  const markdownInline = sections.isInline("markdown");
   const currentSource = sources.find(item => item.id === selectedSource);
   const running = jobs.filter(job => ACTIVE.has(job.status));
   // A search can drop the selected entity; the panel follows what is on the map.
@@ -376,6 +495,8 @@ export function Workspace({ host, card }: PluginViewProps) {
   const groups = overview?.groups ?? [];
   const activeGroupObject = groups.find(item => item.id === activeGroup);
   const pendingSources = sources.filter(item => !item.markdown);
+  const experimentSchemaIds = new Set(schemas.filter(item => item.kind === "experiment").map(item => item.id));
+  const experimentProjections = projections.filter(item => experimentSchemaIds.has(item.schema_id));
 
   return <div className="knowledge-app nodrag nowheel" aria-label={t("{v0} knowledge base", { v0: card.name })}>
     <header className="knowledge-toolbar">
@@ -399,14 +520,35 @@ export function Workspace({ host, card }: PluginViewProps) {
         setNotice(""); await refresh(); await loadGraph();
       })}>{t("Refresh")}</button>
     </header>
-    {error && <p role="alert" className="knowledge-error">{error}</p>}
-    {notice && <p role="status" className="knowledge-notice">{notice}</p>}
 
+    <div className="knowledge-layout">
+      {/* The rail switches workflows; each workflow keeps its own tab strip, so the
+          middle column only ever shows the tabs that belong to whichever is active. */}
+      <nav className="knowledge-rail" aria-label={t("Workflow")}>
+        <button type="button" aria-pressed={category === "literature"} onClick={() => setCategory("literature")}>
+          {t("Literature")}</button>
+        <button type="button" aria-pressed={category === "experiment"} onClick={() => setCategory("experiment")}>
+          {t("Experiment")}</button>
+        {!deployed && <button type="button" aria-pressed={category === "settings"} onClick={() => setCategory("settings")}>
+          {t("Settings")}</button>}
+      </nav>
+      <div className="knowledge-content">
+        {category === "literature" && <div className="knowledge-tabstrip" role="tablist" aria-label={t("Literature sections")}>
+          {LITERATURE_TABS.map(tab => <button key={tab.id} type="button" role="tab"
+            aria-selected={literatureTab === tab.id} aria-pressed={literatureTab === tab.id}
+            onClick={() => setLiteratureTab(tab.id)}>{tab.label()}</button>)}
+        </div>}
+        {category === "experiment" && <div className="knowledge-tabstrip" role="tablist" aria-label={t("Experiment sections")}>
+          {EXPERIMENT_TABS.map(tab => <button key={tab.id} type="button" role="tab"
+            aria-selected={experimentTab === tab.id} aria-pressed={experimentTab === tab.id}
+            onClick={() => setExperimentTab(tab.id)}>{tab.label()}</button>)}
+        </div>}
     <div className="knowledge-grid">
-      {!deployed && <WorkspaceSection id="settings" title={t("Settings")} className="knowledge-section knowledge-settings-section">
+      {!deployed && category === "settings" && <WorkspaceSection id="settings" title={t("Settings")} className="knowledge-section knowledge-settings-section">
         {/* A detached section is portaled straight into its own tab, past ".knowledge-app": this
             wrapper carries the same classes so base colors and control styling still apply there. */}
         <div className="knowledge-section knowledge-settings-section">
+        <Banner error={error} notice={notice} />
         <label>{t("Collection name")}
           <input value={current.collection_name} disabled={busy}
             onChange={event => setSettings({ ...current, collection_name: event.target.value })}
@@ -435,9 +577,10 @@ export function Workspace({ host, card }: PluginViewProps) {
         <small>{t("A published deployment has no live model picker, so Project to JSON there always uses this one.")}</small>
         </div>
       </WorkspaceSection>}
-      <WorkspaceSection id="sources" title={t("Sources")} className="knowledge-section">
+      {category === "literature" && literatureTab === "sources" && <WorkspaceSection id="sources" title={t("Sources")} className="knowledge-section">
         <div className="knowledge-section">
         <h3>{t("Sources")}</h3>
+        <Banner error={error} notice={notice} />
         <div className="knowledge-groupbar">
           {/* The toolbar's own group picker lives outside every section, so a layout that
               places Sources into its own tab (as a deployment does) can leave it with no way
@@ -474,7 +617,7 @@ export function Workspace({ host, card }: PluginViewProps) {
             if (files.length) void upload(files);
           }} />
         </label>
-        <small>{t("PDF, markdown, text, CSV or JSON up to 32 MiB each. Uploads stay unconverted until you process them below, alone or in a batch.")}</small>
+        <small>{t("PDF, markdown, text, CSV, TSV, Excel (.xlsx), images or JSON up to 32 MiB each. Uploads stay unconverted until you process them below, alone or in a batch.")}</small>
         {!sources.length && <p className="knowledge-empty">{t("Nothing uploaded yet.")}</p>}
         <ul className="knowledge-list">
           {sources.map(item => <li key={item.id} className="knowledge-checkrow">
@@ -484,12 +627,15 @@ export function Workspace({ host, card }: PluginViewProps) {
               <span className="knowledge-visually-hidden">{t("Select {v0}", { v0: item.filename })}</span>
             </label>
             <button type="button" aria-pressed={selectedSource === item.id}
-              onClick={() => { setSelectedSource(item.id); setSchemaId(schemaId || schemas[0]?.id || ""); }}>
+              onClick={() => viewSource(item.id)}>
               <span>{item.filename}{!activeGroup && item.group_name ? ` · ${item.group_name}` : ""}</span>
               <small>{bytes(item.size)} · {item.markdown
                 ? t("markdown via {v0}", { v0: item.markdown.engine ?? "?" })
                 : t("awaiting conversion")} · {t("{v0} projections", { v0: item.projections })}</small>
             </button>
+            <button type="button" className="knowledge-viewmarkdown" disabled={!item.markdown}
+              aria-pressed={selectedSource === item.id} title={item.markdown ? t("View extracted markdown") : t("Not converted yet")}
+              onClick={() => viewSource(item.id)}>{t("Markdown")}</button>
           </li>)}
         </ul>
         <div className="knowledge-formbar">
@@ -500,6 +646,37 @@ export function Workspace({ host, card }: PluginViewProps) {
             onClick={() => void processPending()}>
             {t("Process all pending ({v0})", { v0: pendingSources.length })}</button>
         </div>
+
+        {currentSource && <div className="knowledge-detail">
+          <h4>{t("Extracted markdown — {v0}", { v0: currentSource.filename })}</h4>
+          <div className="knowledge-projectbar">
+            <label>{t("Extraction schema")}
+              <select value={schemaId} disabled={busy} onChange={event => setSchemaId(event.target.value)}>
+                <option value="">{t("Choose a schema")}</option>
+                {schemas.map(item => <option key={item.id} value={item.id}>{item.name} v{item.version}</option>)}
+              </select>
+            </label>
+            {deployed
+              ? <p className="knowledge-meta">{t("Model: {v0}", { v0: defaultModel || t("none configured") })}</p>
+              : <label>{t("Model")}
+                  <select value={selectedModel} disabled={busy || !models.length} onChange={event => setModel(event.target.value)}>
+                    {!models.length && <option value="">{t("No model configured")}</option>}
+                    {models.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </select>
+                </label>}
+            <button type="button" className="knowledge-primary" disabled={busy || !extracted || !schemaId || !selectedModel}
+              onClick={() => void project()}>{busy ? t("Working…") : t("Project to JSON")}</button>
+            <button type="button" onClick={() => setSelectedSource("")}>{t("Close")}</button>
+          </div>
+          {documentError ? <p className="knowledge-empty">{documentError}</p>
+            : !extracted ? <p role="status">{t("Loading markdown…")}</p> : <>
+            <p className="knowledge-meta">{t("{v0} · {v1} characters · engine {v2}", {
+              v0: extracted.filename ?? currentSource.filename, v1: extracted.total_characters,
+              v2: extracted.engine ?? "?" })}</p>
+            <pre className="knowledge-markdown">{extracted.markdown}</pre>
+            {extracted.has_more && <button type="button" disabled={busy} onClick={() => void extend()}>{t("Load more")}</button>}
+          </>}
+        </div>}
 
         <h4>{t("Conversion jobs")}</h4>
         {!jobs.length && <p className="knowledge-empty">{t("No jobs yet.")}</p>}
@@ -522,55 +699,48 @@ export function Workspace({ host, card }: PluginViewProps) {
           </ul>
         </div>}
         </div>
-      </WorkspaceSection>
+      </WorkspaceSection>}
 
-      <WorkspaceSection id="markdown" title={t("Markdown")} className={`knowledge-section${markdownInline ? " knowledge-wide" : ""}`}>
-        <div className={`knowledge-section${markdownInline ? " knowledge-wide" : ""}`}>
-        <h3>{t("Markdown")}</h3>
-        {!currentSource ? <p className="knowledge-empty">{t("Select a source to read its extracted markdown.")}</p> : <>
-          <div className="knowledge-projectbar">
-            <label>{t("Extraction schema")}
-              <select value={schemaId} disabled={busy} onChange={event => setSchemaId(event.target.value)}>
-                <option value="">{t("Choose a schema")}</option>
-                {schemas.map(item => <option key={item.id} value={item.id}>{item.name} v{item.version}</option>)}
-              </select>
-            </label>
-            {deployed
-              ? <p className="knowledge-meta">{t("Model: {v0}", { v0: defaultModel || t("none configured") })}</p>
-              : <label>{t("Model")}
-                  <select value={selectedModel} disabled={busy || !models.length} onChange={event => setModel(event.target.value)}>
-                    {!models.length && <option value="">{t("No model configured")}</option>}
-                    {models.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
-                  </select>
-                </label>}
-            <button type="button" className="knowledge-primary" disabled={busy || !extracted || !schemaId || !selectedModel}
-              onClick={() => void project()}>{busy ? t("Working…") : t("Project to JSON")}</button>
-          </div>
-          {documentError ? <p className="knowledge-empty">{documentError}</p>
-            : !extracted ? <p role="status">{t("Loading markdown…")}</p> : <>
-            <p className="knowledge-meta">{t("{v0} · {v1} characters · engine {v2}", {
-              v0: extracted.filename ?? currentSource.filename, v1: extracted.total_characters,
-              v2: extracted.engine ?? "?" })}</p>
-            <pre className="knowledge-markdown">{extracted.markdown}</pre>
-            {extracted.has_more && <button type="button" disabled={busy} onClick={() => void extend()}>{t("Load more")}</button>}
-          </>}
-        </>}
+      {category === "literature" && literatureTab === "search" && <WorkspaceSection id="search" title={t("Search")} className="knowledge-section">
+        <div className="knowledge-section">
+        <h3>{t("Search")}</h3>
+        <Banner error={error} notice={notice} />
+        <p className="knowledge-meta">{t("Full-text search across every converted document. Results are raw document text, not published facts — open a result to read the full document in Sources.")}</p>
+        <div className="knowledge-formbar">
+          <input value={searchQuery} disabled={busy} placeholder={t("Search converted documents…")}
+            onChange={event => setSearchQuery(event.target.value)}
+            onKeyDown={event => { if (event.key === "Enter") void runSearch(); }} />
+          <button type="button" className="knowledge-primary" disabled={busy || !searchQuery.trim()}
+            onClick={() => void runSearch()}>{t("Search")}</button>
         </div>
-      </WorkspaceSection>
+        {searchError && <p role="alert" className="knowledge-error">{searchError}</p>}
+        {searchResults && !searchResults.length && <p className="knowledge-empty">{t("No matches.")}</p>}
+        <ul className="knowledge-list">
+          {(searchResults ?? []).map((item, index) => <li key={index}>
+            <button type="button" onClick={() => viewSource(item.source_id)}>
+              <span>{item.filename ?? shortId(item.source_id)}{item.group_name ? ` · ${item.group_name}` : ""}</span>
+              <small>{item.heading_path || t("(no heading)")} · {item.excerpt.slice(0, 160)}</small>
+            </button>
+          </li>)}
+        </ul>
+        </div>
+      </WorkspaceSection>}
 
-      <WorkspaceSection id="schemas" title={t("Schemas")} className="knowledge-section">
+      {((category === "literature" && literatureTab === "schemas") || (category === "experiment" && experimentTab === "schemas")) && <WorkspaceSection id="schemas" title={t("Schemas")} className="knowledge-section">
         <div className="knowledge-section">
         <h3>{t("Schemas")}</h3>
+        <Banner error={error} notice={notice} />
         <p className="knowledge-meta">{t("A schema is a JSON Schema plus the system prompt used to extract it.")}</p>
         <ul className="knowledge-list">
           {schemas.map(item => <li key={item.id}>
             <button type="button" aria-pressed={editor?.id === item.id} disabled={busy} onClick={() => void openSchema(item.id)}>
-              <span>{item.name}</span><small>v{item.version} · {item.description || item.domain}</small>
+              <span>{item.name}</span>
+              <small>v{item.version} · {item.kind === "experiment" ? t("experiment") : t("literature")} · {item.description || item.domain}</small>
             </button>
           </li>)}
         </ul>
         {!editor && <button type="button" disabled={busy} onClick={() => setEditor({
-          id: "", name: "", description: "", system_prompt: "",
+          id: "", name: "", description: "", system_prompt: "", kind: "literature",
           definition: pretty({ type: "object", required: [], properties: { entities: { type: "array", items: { type: "object" } }, relations: { type: "array", items: { type: "object" } } } }),
         })}>{t("New schema")}</button>}
         {editor && <div className="knowledge-form">
@@ -578,6 +748,13 @@ export function Workspace({ host, card }: PluginViewProps) {
             onChange={event => setEditor({ ...editor, name: event.target.value })} /></label>
           <label>{t("Description")}<input value={editor.description} disabled={busy}
             onChange={event => setEditor({ ...editor, description: event.target.value })} /></label>
+          <label>{t("Kind")}
+            <select value={editor.kind} disabled={busy}
+              onChange={event => setEditor({ ...editor, kind: event.target.value as "literature" | "experiment" })}>
+              <option value="literature">{t("Literature — projections build a draft for the knowledge graph")}</option>
+              <option value="experiment">{t("Experiment — projections assemble into one experiment record")}</option>
+            </select>
+          </label>
           <label>{t("System prompt")}<textarea value={editor.system_prompt} disabled={busy} rows={3}
             onChange={event => setEditor({ ...editor, system_prompt: event.target.value })} /></label>
           <label>{t("JSON Schema definition")}<textarea value={editor.definition} disabled={busy} rows={8} spellCheck={false}
@@ -589,11 +766,12 @@ export function Workspace({ host, card }: PluginViewProps) {
           </div>
         </div>}
         </div>
-      </WorkspaceSection>
+      </WorkspaceSection>}
 
-      <WorkspaceSection id="projections" title={t("Projections")} className="knowledge-section">
+      {category === "literature" && literatureTab === "projections" && <WorkspaceSection id="projections" title={t("Projections")} className="knowledge-section">
         <div className="knowledge-section">
         <h3>{t("Projections")}</h3>
+        <Banner error={error} notice={notice} />
         <p className="knowledge-meta">{t("Structured extractions. A projection is a candidate until a person approves a draft built from it.")}</p>
         {!projections.length && <p className="knowledge-empty">{t("No projections yet.")}</p>}
         <ul className="knowledge-list">
@@ -621,11 +799,75 @@ export function Workspace({ host, card }: PluginViewProps) {
           <pre>{pretty(projection.data)}</pre>
         </div>}
         </div>
-      </WorkspaceSection>
+      </WorkspaceSection>}
 
-      <WorkspaceSection id="review" title={t("Review")} className="knowledge-section">
+      {category === "experiment" && experimentTab === "experiments" && <WorkspaceSection id="experiments" title={t("Experiments")} className="knowledge-section">
+        <div className="knowledge-section">
+        <h3>{t("Experiments")}</h3>
+        <Banner error={error} notice={notice} />
+        <p className="knowledge-meta">{t("Assemble several per-file extractions (one kind=\"experiment\" schema) into one structured, queryable experiment record. Never touches a draft, review or the published graph.")}</p>
+        <h4>{t("Select projections to assemble")}</h4>
+        {!experimentProjections.length
+          ? <p className="knowledge-empty">{t("Project a document against an experiment-kind schema first, in Sources.")}</p>
+          : <ul className="knowledge-list">
+              {experimentProjections.map(item => <li key={item.id} className="knowledge-checkrow">
+                <label><input type="checkbox" checked={chosenExperiment.includes(item.id)} disabled={busy}
+                  onChange={event => setChosenExperiment(event.target.checked
+                    ? [...chosenExperiment, item.id] : chosenExperiment.filter(value => value !== item.id))} />
+                  <span className="knowledge-visually-hidden">{t("Select projection {v0}", { v0: shortId(item.id) })}</span>
+                </label>
+                <span className="knowledge-checkrow-label">
+                  <span>{item.summary || shortId(item.id)}</span>
+                  <small>{schemas.find(s => s.id === item.schema_id)?.name ?? shortId(item.schema_id)}</small>
+                </span>
+              </li>)}
+            </ul>}
+        <button type="button" className="knowledge-primary" disabled={busy || !chosenExperiment.length}
+          onClick={() => void assembleExperiment()}>
+          {t("Assemble experiment record from {v0} selected", { v0: chosenExperiment.length })}</button>
+
+        <h4>{t("Experiment records")}</h4>
+        {!experiments.length && <p className="knowledge-empty">{t("No experiment records yet.")}</p>}
+        <ul className="knowledge-list">
+          {experiments.map(item => <li key={item.id}>
+            <button type="button" aria-pressed={experimentDetail?.id === item.id} disabled={busy}
+              onClick={() => void loadExperiment(item.id)}>
+              <span>{item.name}</span>
+              <small>{item.status} · {t("revision {v0}", { v0: item.revision })}
+                {item.conflicts.length ? ` · ${t("{v0} to review", { v0: item.conflicts.length })}` : ""}</small>
+            </button>
+          </li>)}
+        </ul>
+        {experimentDetail && <div className="knowledge-detail">
+          <h4>{experimentDetail.name}</h4>
+          <p className="knowledge-meta">{t("{v0} · revision {v1} · evidence: {v2}", {
+            v0: experimentDetail.status, v1: experimentDetail.revision,
+            v2: experimentDetail.evidence.map(link => shortId(link.source_id)).join(", ") || "—" })}</p>
+          {!!experimentDetail.conflicts.length && <div role="alert" className="knowledge-confirm">
+            <strong>{t("Sources disagree on these fields")}</strong>
+            <ul className="knowledge-relations">
+              {experimentDetail.conflicts.map((conflict, index) => <li key={index}>
+                <code>{conflict.field}</code>: {conflict.values.map(v =>
+                  `${JSON.stringify(v.value)} (${shortId(v.source_id)})`).join(" vs. ")}
+              </li>)}
+            </ul>
+          </div>}
+          <label>{t("Merged data (JSON)")}<textarea value={experimentDataDraft} disabled={busy} rows={10}
+            spellCheck={false} onChange={event => setExperimentDataDraft(event.target.value)} /></label>
+          <div className="knowledge-formbar">
+            <button type="button" disabled={busy} onClick={() => void saveExperimentEdits()}>
+              {t("Save changes")}</button>
+            <button type="button" className="knowledge-primary" disabled={busy || experimentDetail.status === "confirmed"}
+              onClick={() => void confirmExperiment()}>{t("Confirm")}</button>
+          </div>
+        </div>}
+        </div>
+      </WorkspaceSection>}
+
+      {category === "literature" && literatureTab === "review" && <WorkspaceSection id="review" title={t("Review")} className="knowledge-section">
         <div className="knowledge-section">
         <h3>{t("Review")}</h3>
+        <Banner error={error} notice={notice} />
         <p className="knowledge-meta">{t("Approving publishes a fact revision and is the only thing that writes the graph.")}</p>
         {!drafts.length && <p className="knowledge-empty">{t("No drafts yet. Select projections to build one.")}</p>}
         <ul className="knowledge-list">
@@ -661,11 +903,12 @@ export function Workspace({ host, card }: PluginViewProps) {
           </div>}
         </div>}
         </div>
-      </WorkspaceSection>
+      </WorkspaceSection>}
 
-      <WorkspaceSection id="graph" title={t("Graph")} className="knowledge-section knowledge-wide">
+      {category === "literature" && literatureTab === "graph" && <WorkspaceSection id="graph" title={t("Graph")} className="knowledge-section knowledge-wide">
         <div className="knowledge-section knowledge-wide">
         <h3>{t("Knowledge graph")}</h3>
+        <Banner error={error} notice={notice} />
         <div className="knowledge-formbar">
           <label>{t("Filter by name")}<input value={filter} disabled={busy}
             onChange={event => setFilter(event.target.value)} /></label>
@@ -709,8 +952,10 @@ export function Workspace({ host, card }: PluginViewProps) {
           </div>
         </>}
         </div>
-      </WorkspaceSection>
+      </WorkspaceSection>}
     </div>
+    </div>
+  </div>
   </div>;
 }
 

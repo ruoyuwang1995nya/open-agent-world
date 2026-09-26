@@ -32,7 +32,7 @@ from backend.services import create_services  # noqa: E402
 from backend.tests.conftest import create_node  # noqa: E402
 from backend.world.models import CardCreate  # noqa: E402
 from oaw_knowledge_base.errors import KnowledgeError  # noqa: E402
-from oaw_knowledge_base.operations import EXTRACT_ACTIONS, OPERATIONS, READ_ACTIONS  # noqa: E402
+from oaw_knowledge_base.operations import BY_NAME, EXTRACT_ACTIONS, OPERATIONS, READ_ACTIONS  # noqa: E402
 
 NODE_TYPE = "knowledge.base"
 # Uploading a file, converting it, managing groups, changing settings and approving a
@@ -170,15 +170,20 @@ def test_the_research_formation_deploys_wired_independent_bases(client):
 
     provider = WorldAgentCapabilityProvider(client.app.state.services)
     tools = {tool.name for tool in client.portal.call(provider.list_tools, a["agent"])}
-    assert {f"knowledge_{name}" for name in READ_ACTIONS} <= tools
+    expected_tool_names = {BY_NAME[name].tool_name for name in READ_ACTIONS}
+    assert expected_tool_names <= tools
     # Extraction is a button, not a tool: nothing the Librarian holds can write.
     assert not tools & {"knowledge_projection_prompt", "knowledge_save_projection",
                         "knowledge_draft", "knowledge_ingest", "knowledge_review"}
 
     layout = json.dumps(nodes[a["group"]]["config"]["workspace_layout"])
     assert all(a[key] in layout for key in ("conversation", "knowledge"))
-    assert all(section in layout for section in
-               ("sessions", "sources", "conversation", "markdown", "graph", "review"))
+    assert all(section in layout for section in ("sessions", "conversation"))
+    # The knowledge card is placed whole (no section_id): its own frontend renders
+    # the Literature/Experiment rail and each workflow's tabs itself, so no
+    # individual section (sources, markdown, graph, review, ...) needs its own
+    # place in the generic layout to be reachable.
+    assert '"card_id": "' + a["knowledge"] + '"}' in layout
 
     # Each deployment owns its database: a document in one is invisible in the other.
     resource(client, a["knowledge"], "ingest", filename="note.md", media_type="text/markdown",
@@ -238,7 +243,8 @@ def test_the_research_formation_publishes_and_serves_as_a_deployment(data_root):
     create_deployment(data_root, runtime_root, release_id, password="a-fine-long-password")
     manifest = json.loads((runtime_root / "deployment.json").read_text("utf-8"))
     assert set(manifest["permissions"][keys["knowledge"]]) == {
-        "settings", "sources", "schemas", "markdown", "projections", "review", "graph"}
+        "settings", "sources", "search", "schemas", "markdown", "projections", "experiments",
+        "review", "graph"}
     access = manifest["plugin_access"][keys["knowledge"]]
     # Settings never appears among the granted resource actions, so a business
     # release can never rewrite the collection name, PDF engine or MinerU URL,

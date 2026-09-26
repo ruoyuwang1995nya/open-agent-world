@@ -40,6 +40,29 @@ def _prepare_file(path):
         db.close()
 
 
+def _backfill_search_index(kb, engine):
+    """Index any record converted before the search feature existed.
+
+    Chunks are otherwise only (re)written by the conversion pipeline going forward;
+    this catches up a database created before ``search_store`` did, once, cheaply
+    skipping whatever a record already has indexed.
+    """
+    from .search_store import has_chunks, index_record
+
+    offset = 0
+    while True:
+        batch = kb.records.list(limit=200, offset=offset)
+        if not batch:
+            return
+        for record in batch:
+            data = record.data or {}
+            text, source_id = data.get("markdown"), data.get("source_id")
+            if isinstance(text, str) and source_id and not has_chunks(engine, record.id):
+                index_record(engine, record_id=record.id, source_id=source_id,
+                            group_id=record.collection_id, text=text)
+        offset += len(batch)
+
+
 def _build(path):
     try:
         from mkb.sdk import KnowledgeBase
@@ -47,12 +70,15 @@ def _build(path):
         raise KnowledgeError(INSTALL_HINT) from error
     from sqlalchemy import create_engine
 
+    from .experiment_store import ExperimentRecordStore
     from .graph_store import SqlGraphStore
     from .pipelines import register_pipelines
+    from .search_store import ensure_schema as ensure_search_schema
 
     _prepare_file(path)
     url = f"sqlite:///{path}"
-    # A separate engine for the graph tables keeps graph writes out of MKB transactions.
+    # A separate engine for the plugin's own tables keeps their writes out of MKB
+    # transactions: the graph, the search index and experiment records all live here.
     engine = create_engine(url, connect_args={"timeout": 30})
     graph_store = SqlGraphStore(engine)
     kb = KnowledgeBase.from_url(
@@ -63,8 +89,11 @@ def _build(path):
     kb.initialize()
     kb.oaw_graph_store = graph_store
     kb.oaw_engine = engine
+    ensure_search_schema(engine)
+    kb.oaw_experiments = ExperimentRecordStore(engine)
     register_pipelines(kb)
     kb.jobs.recover_interrupted()
+    _backfill_search_index(kb, engine)
     return kb
 
 

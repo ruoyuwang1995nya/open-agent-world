@@ -1,14 +1,24 @@
 # Knowledge base
 
 An automatically discovered OAW plugin (`knowledge.base`). One card owns one SQL
-file and carries documents through the whole research-knowledge pipeline:
-raw data → markdown → structured JSON projection → draft graph → human review →
-published knowledge graph.
+file and carries three related workflows over the same collection:
+
+- **Literature** — raw data → markdown → full-text search, or → structured JSON
+  projection → draft graph → human review → published knowledge graph.
+- **Experiments** — several files describing one experiment (a spreadsheet, a
+  photographed notebook page, a paper) → per-file structured projections → one
+  merged, queryable experiment record, confirmed by a person.
+- The knowledge graph is opt-in, not required by either workflow: search answers
+  document-level questions and experiment records answer structured ones without
+  ever touching a draft or a review.
 
 This is a proof of concept built on the `mat_know_base` (MKB) Python SDK. It runs
 the pipeline in process, stores every byte in one SQLite file, and needs no Docker,
-no MinIO, no PostgreSQL and no object store. The plugin imports MKB; it never
-modifies it.
+no MinIO, no PostgreSQL and no object store. The plugin imports MKB as a fixed,
+installed dependency; it never modifies it — full-text search, experiment records
+and the multi-format converters below are all implemented in this plugin, in
+`search_store.py`, `experiment_store.py` and `markdown.py`, alongside MKB's own
+tables in the same SQLite file, the same way the knowledge graph already is.
 
 The same package runs two ways. **Embedded**, as the card described below.
 **Standalone**, as a small HTTP service, an MCP server and a `kb` CLI over the same
@@ -18,18 +28,19 @@ backend running.
 
 ## Install the engines
 
-The plugin loader does not install plugin dependencies, so MKB and the PDF reader
-go into the backend environment once (the standalone install is
-[below](#running-it-without-oaw)):
+The plugin loader does not install plugin dependencies, so MKB, the PDF reader and
+the spreadsheet reader go into the backend environment once (the standalone install
+is [below](#running-it-without-oaw)):
 
 ```sh
-backend/.venv/bin/pip install "mat-know-base @ /path/to/mat_know_base" pymupdf4llm
+backend/.venv/bin/pip install "mat-know-base @ /path/to/mat_know_base" pymupdf4llm openpyxl
 ```
 
 Without MKB the card loads but every action reports that `mat-know-base` is
 missing. Without `pymupdf4llm` everything else still works and PDFs fall back to
-the remote engine or fail with a named missing engine — text, markdown, CSV and
-JSON never need either package.
+the remote engine or fail with a named missing engine. Without `openpyxl`, `.xlsx`
+uploads fail the same way — text, markdown, CSV, TSV and JSON never need either
+package.
 
 For the optional remote PDF engine, set the token in the backend environment:
 
@@ -37,25 +48,35 @@ For the optional remote PDF engine, set the token in the backend environment:
 export OAW_MINERU_TOKEN=...
 ```
 
-The token is read **only** from that environment variable. It is never stored in
-card configuration, never sent to the frontend, and never reaches an Agent. The
-card's **MinerU base URL** setting selects the service; it carries no credential.
-The standalone service reads the same variable from its own environment.
+For images (a photographed lab notebook, a chart, a gel image), configure a vision
+model the same way — OCR cannot read handwriting, so this is the only image engine:
+
+```sh
+export OAW_VISION_API_KEY=...
+export OAW_VISION_BASE_URL=https://api.openai.com/v1
+export OAW_VISION_MODEL=gpt-4o-mini   # optional, this is the default
+```
+
+Both are read **only** from those environment variables. Neither is stored in card
+configuration, sent to the frontend, or reached by an Agent. The card's **MinerU
+base URL** setting selects the PDF service; it carries no credential. The
+standalone service reads the same variables from its own environment.
 
 ## The Knowledge research formation
 
 The card is most useful with someone to ask about it. The plugin registers a Legion
 preset, **Knowledge research**, in the Legion deck: deploying it places a knowledge
 base, a **Librarian** Agent and a Conversation, already wired and already laid out —
-the conversation as a narrow sidebar, then Sources (uploads and conversion jobs
-together), then markdown and schemas over projections, review and the graph.
+the card on one side with a rail for its two workflows, **Literature** and
+**Experiment**, and the conversation beside it.
 
 **You drive the pipeline; the Librarian only reads.** Uploading a file, converting
-it, running a projection, building a draft and approving it are buttons in the
-workspace, in that order. The Librarian holds **Knowledge read** and nothing else: it
-can tell you what the base contains, read a converted document back to you and query
-the published graph, but it cannot ingest, convert, project, draft or approve.
-Nothing enters the graph except by your click.
+it, running a projection, building a draft, assembling an experiment record and
+approving a draft are buttons in the workspace. The Librarian holds **Knowledge
+read** and nothing else: it can tell you what the base contains, search or read a
+converted document back to you, read experiment records and query the published
+graph, but it cannot ingest, convert, project, draft, assemble or approve. Nothing
+enters the graph, and no experiment record exists, except by your click.
 
 Saving your own knowledge Legion works too, but note what a copy is: the node type is
 templateable while the database is not captured, so **a deployed copy is an empty
@@ -66,21 +87,35 @@ makes.
 ## Using the card
 
 Open the **Knowledge base** pack in the card library, place a card, then open its
-workspace.
+workspace. The card's own rail switches between its two workflows; each workflow
+keeps its own tab strip of sections, so only what belongs to the workflow you are in
+ever shows.
+
+### Literature
 
 1. **Sources** — organize documents into **groups** (create, rename or delete one
-   from the group selector in the toolbar), then add PDF, markdown, text, CSV or JSON
-   files up to 32 MiB each. Uploading never converts a file on its own: select one or
-   more sources and press **Process** — alone or in a batch — to queue their markdown
-   conversion. The conversion jobs and their progress or failures live in this same
-   section, right below the source list, not in a tab of their own.
-2. **Markdown** — select a source to read the extracted markdown, choose a schema
-   and a model, and **Project to JSON**.
+   from the group selector in the toolbar or right here in Sources), then add PDF,
+   markdown, text, CSV, TSV, Excel (`.xlsx`), image or JSON files up to 32 MiB each.
+   Uploading never converts a file on its own: select one or more sources and press
+   **Process** — alone or in a batch — to queue their markdown conversion. The
+   conversion jobs and their progress or failures live in this same section, right
+   below the source list, not in a tab of their own. Once a source is converted, a
+   small **Markdown** button next to its entry opens the extracted markdown (a real
+   table for spreadsheets, a model's transcription for images) right there, together
+   with the schema and model pickers and **Project to JSON** — there is no separate
+   Markdown tab.
+2. **Search** — full-text search across every already-converted document at once,
+   ranked, each result carrying the source filename and the heading it falls under.
+   Raw document text, not a verified fact — a result opens the source in Sources,
+   where the whole document is one click away.
 3. **Schemas** — a schema is a JSON Schema object plus the system prompt used to
-   extract it. Reuse one before creating a near-duplicate.
+   extract it, tagged **literature** (projections build a draft for the graph) or
+   **experiment** (projections assemble into one experiment record). Reachable from
+   both workflows, since the two share the same schema collection. Reuse one before
+   creating a near-duplicate.
 4. **Projections** — structured extractions, each linked by evidence back to the
-   markdown artifact and the original file. Select one or more from the **same
-   group** and **Build draft**.
+   markdown artifact and the original file. Select one or more **literature**
+   projections from the **same group** and **Build draft**.
 5. **Review** — read the proposed graph, then submit, reject, or approve.
    Approving asks for an explicit confirmation and is the **only** thing that
    writes the knowledge graph.
@@ -88,15 +123,27 @@ workspace.
    type and properties beside it, double-click to traverse outward from it. The
    name filter and the entity list stay beside the map.
 
-The group selector in the toolbar narrows every section — sources, markdown,
-projections, drafts and the graph — to one group at a time, or shows everything
-across every group. A source belongs to exactly one group for its whole life;
-markdown, projections, drafts and the entities and relations a draft publishes all
-trace back to the group their source came from, so a knowledge base with several
-document sets stays as easy to browse group by group as it is to see as a whole.
+### Experiment
 
-Model output is never presented as fact. A projection and a draft are candidates;
-a published fact revision is what an approval produces, and every published entity
+1. **Experiments** — select one or more **experiment** projections (one per
+   attached file, extracted in Sources against an experiment-kind schema) and
+   **Assemble experiment record**: a model merges them into one structured record,
+   flagging any field the files disagree on. Edit the merged JSON or **Confirm** it
+   directly — an experiment record never touches a draft, a review or the
+   published graph.
+2. **Schemas** — the same schema list as Literature's, so an experiment-kind
+   schema created here shows up there too, and back.
+
+The group selector — in the toolbar, and again right in Sources — narrows every
+section to one group at a time, or shows everything across every group. A source
+belongs to exactly one group for its whole life; markdown, projections, drafts,
+experiment records and the entities and relations a draft publishes all trace back
+to the group their source came from, so a knowledge base with several document sets
+stays as easy to browse group by group as it is to see as a whole.
+
+Model output is never presented as fact. A projection and a draft are candidates; a
+confirmed experiment record is a person's checked judgment, not a graph fact; a
+published fact revision is what an approval produces, and every published entity
 traces back through its draft and projections to the page it came from.
 
 ## Where the model call happens
@@ -112,6 +159,13 @@ A connected Agent takes the other path: `knowledge_projection_prompt` returns th
 prompt and markdown, the Agent produces the JSON, and `knowledge_save_projection`
 stores it. Either way the projection is validated and evidence-linked the same way.
 
+**Assemble experiment record** works the same way, one route over: `POST
+/api/knowledge/{card_id}/assemble` reads every selected projection's data through
+`experiment_assemble_prompt`, resolves the model connection, calls the provider once
+to merge them, and writes the result back through `experiment_save`. An Agent can
+take the same two-step path directly with `knowledge_experiment_assemble_prompt` and
+`knowledge_experiment_save`.
+
 Outside OAW, `kb project` is the third caller of that same prompt builder, using a
 model from your own shell (`KB_MODEL_BASE_URL`, `KB_MODEL_API_KEY`, `KB_MODEL`).
 The standalone service never holds model credentials and never calls a provider.
@@ -123,20 +177,21 @@ The card declares a `NodeDeploymentDefinition` (Plugin API 1.21+, see
 Legion can be [published](../../docs/deployment.md) as a locked, password-protected
 application the same way a Conversation or a Text card can. Every business action a
 person uses to drive the pipeline publishes: upload, convert (alone or batched),
-organize sources into groups, project, build a draft, and submit, reject or approve
-it — approving is still the only thing that writes the graph. The **Settings**
-section never publishes: the collection name, PDF engine and MinerU URL stay
-engineering-only and the section does not even mount in a deployed release,
-regardless of whether its pane stays visible in the published layout.
+organize sources into groups, search, project, build a draft, assemble or confirm an
+experiment record, and submit, reject or approve a draft — approving is still the
+only thing that writes the graph. The **Settings** section never publishes: the
+collection name, PDF engine and MinerU URL stay engineering-only and the section does
+not even mount in a deployed release, regardless of whether its pane stays visible in
+the published layout.
 
 A deployment mounts no live model picker (`docs/deployment.md`: "it does not mount
-... model settings"), so **Project to JSON** there always uses one model chosen
-ahead of time: set **Default model for deployment** in the engineering Settings
-section before publishing. `POST /api/knowledge/{card_id}/project` is an
-engineering-only route; a deployment reaches the same underlying call through
-`POST /api/runtime-app/workspace/knowledge/{card_id}/project` instead, gated on the
-release granting both halves of the pipeline it drives (`projection_prompt` and
-`save_projection`).
+... model settings"), so **Project to JSON** and **Assemble experiment record**
+there always use one model chosen ahead of time: set **Default model for
+deployment** in the engineering Settings section before publishing.
+`POST /api/knowledge/{card_id}/project` and `.../assemble` are engineering-only
+routes; a deployment reaches the same underlying calls through
+`POST /api/runtime-app/workspace/knowledge/{card_id}/project` and `.../assemble`
+instead, each gated on the release granting both halves of the pipeline it drives.
 
 See [`examples/knowledge-legion-deploy`](../../examples/knowledge-legion-deploy/README.md)
 for a runnable end-to-end example — it also automates the one extra setup step this
@@ -151,7 +206,7 @@ service with an HTTP API, an MCP server for an agent harness, and a `kb` CLI:
 
 ```sh
 python -m venv .venv && .venv/bin/pip install -e plugins/knowledge_base[service] \
-    "mat-know-base @ /path/to/mat_know_base" pymupdf4llm
+    "mat-know-base @ /path/to/mat_know_base" pymupdf4llm openpyxl
 ```
 
 A **store** is a directory holding one `knowledge.db` plus a small settings file;
@@ -248,8 +303,8 @@ conversion, create/delete) is covered by
 
 | Relationship | Tools and permissions |
 | --- | --- |
-| Knowledge read | `knowledge_overview`, `knowledge_sources`, `knowledge_markdown`, `knowledge_schemas`, `knowledge_projections`, `knowledge_graph`, `knowledge_jobs` |
-| Knowledge extract | Read tools plus `knowledge_projection_prompt`, `knowledge_save_projection`, `knowledge_draft` |
+| Knowledge read | `knowledge_overview`, `knowledge_sources`, `knowledge_markdown`, `knowledge_document_search`, `knowledge_schemas`, `knowledge_projections`, `knowledge_experiments`, `knowledge_graph`, `knowledge_jobs` |
+| Knowledge extract | Read tools plus `knowledge_projection_prompt`, `knowledge_save_projection`, `knowledge_draft`, `knowledge_experiment_assemble_prompt`, `knowledge_experiment_save`, `knowledge_experiment_update` |
 
 Uploading raw data (`ingest`), converting it (`process`), managing groups
 (`groups`), changing card settings (`settings`) and reviewing a draft (`review`)
@@ -266,12 +321,17 @@ Each card owns `knowledge.db` under its node storage directory. Sources,
 artifacts, records, schemas, projections, evidence, drafts, review decisions,
 fact revisions, the integration outbox and the knowledge graph itself all live in
 that one file — the graph in plugin-owned `oaw_kg_entity` / `oaw_kg_relation`
-tables, so it survives a restart. The file uses WAL and a 30-second busy timeout
-because the job thread and resource actions write concurrently. Groups are plain
-MKB collections in the same file, so they persist and restart exactly the same way;
-opening an older `knowledge.db` for the first time after upgrading adds the
-`group_id` column those two tables need automatically, leaving every existing fact
-in place (tagged to no group until the next approval touches it).
+tables, so it survives a restart. The search index (`oaw_kb_chunks_fts`, an FTS5
+virtual table populated as each document converts) and experiment records
+(`oaw_kb_experiment_record` / `oaw_kb_experiment_record_evidence`) are plugin-owned
+tables in the same file too, alongside MKB's own schema, not a second database. The
+file uses WAL and a 30-second busy timeout because the job thread and resource
+actions write concurrently. Groups are plain MKB collections in the same file, so
+they persist and restart exactly the same way; opening an older `knowledge.db` for
+the first time after upgrading adds the `group_id` column those two tables need
+automatically, leaving every existing fact in place (tagged to no group until the
+next approval touches it), and backfills the search index for any record converted
+before it existed.
 
 Deleting a card permanently removes `knowledge.db` and its WAL/SHM companions
 through OAW's journaled lifecycle finalizer. Canvas undo, copy/paste and Legion

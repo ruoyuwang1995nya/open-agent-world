@@ -4,10 +4,10 @@ Unlike ``examples/deployed-workspace`` this is not a canned, key-free demo: the
 Librarian reads a real knowledge base, and turning a document into structured
 JSON genuinely calls a model. What this script *does* automate is the one extra
 setup step this one plugin needs that the rest of the project does not: the
-"knowledge" extra (``mat-know-base``, ``pymupdf4llm``) in ``backend/.venv``. It
-installs that automatically, then builds the release the same way the Publish
-application panel does — deploy the preset, upload and convert one sample
-document, seed one hand-written projection so Review and the graph have
+"knowledge" extra (``mat-know-base``, ``pymupdf4llm``, ``openpyxl``) in
+``backend/.venv``. It installs that automatically, then builds the release the same
+way the Publish application panel does — deploy the preset, upload and convert one
+sample document, seed one hand-written projection so Review and the graph have
 something to show without a model call, publish, and serve.
 """
 from __future__ import annotations
@@ -66,19 +66,19 @@ PROJECTION = {
 }
 
 INSTALL_HINT = ("See plugins/knowledge_base/README.md#install-the-engines to install "
-               "mat-know-base and pymupdf4llm by hand.")
+               "mat-know-base, pymupdf4llm and openpyxl by hand.")
 
 
 def ensure_knowledge_dependencies(python: Path) -> None:
-    """The knowledge base card needs mat-know-base and pymupdf4llm in this venv;
-    ``scripts/setup.sh``/``setup.ps1`` do not install them by default. Skip the
+    """The knowledge base card needs mat-know-base, pymupdf4llm and openpyxl in this
+    venv; ``scripts/setup.sh``/``setup.ps1`` do not install them by default. Skip the
     (slower) sync once they are already importable, so a second run is instant.
     """
-    probe = subprocess.run([str(python), "-c", "import mkb, pymupdf4llm"], cwd=ROOT,
+    probe = subprocess.run([str(python), "-c", "import mkb, pymupdf4llm, openpyxl"], cwd=ROOT,
                            capture_output=True)
     if probe.returncode == 0:
         return
-    print("Installing the knowledge base plugin's engines (mat-know-base, pymupdf4llm)...",
+    print("Installing the knowledge base plugin's engines (mat-know-base, pymupdf4llm, openpyxl)...",
           file=sys.stderr)
     if shutil.which("uv") is None:
         raise SystemExit(f"uv is required to install them automatically. {INSTALL_HINT}")
@@ -89,7 +89,7 @@ def ensure_knowledge_dependencies(python: Path) -> None:
                             "--extra", "adk", "--extra", "litellm", "--extra", "knowledge"], cwd=ROOT)
     if result.returncode != 0:
         raise SystemExit(f"Automatic install failed (uv sync exited {result.returncode}). {INSTALL_HINT}")
-    probe = subprocess.run([str(python), "-c", "import mkb, pymupdf4llm"], cwd=ROOT,
+    probe = subprocess.run([str(python), "-c", "import mkb, pymupdf4llm, openpyxl"], cwd=ROOT,
                            capture_output=True)
     if probe.returncode != 0:
         raise SystemExit(f"mat-know-base is still not importable after installing. {INSTALL_HINT}")

@@ -78,6 +78,61 @@ def test_ingest_converts_to_markdown_with_evidence(card):
     assert [str(link.source_id) for link in links] == [source_id]
 
 
+def test_conversion_also_indexes_the_document_for_search(card):
+    source_id, _ = ingest_document(card)
+    kb = client.open_client(card.node_id, card.storage_path)
+
+    from oaw_knowledge_base import search_store
+
+    hits = search_store.search(kb.oaw_engine, "sintered")
+    assert hits and hits[0]["source_id"] == source_id
+    assert hits[0]["group_id"] == str(kb.collections.list()[0].id)
+
+
+def test_reopening_the_client_backfills_records_indexed_before_search_existed(card):
+    source_id, _ = ingest_document(card)
+    kb = client.open_client(card.node_id, card.storage_path)
+
+    from oaw_knowledge_base import search_store
+
+    # Simulate a database from before the search feature existed: its chunks are
+    # gone, as if this record's conversion predated search_store entirely.
+    with kb.oaw_engine.begin() as connection:
+        connection.exec_driver_sql(f"DELETE FROM {search_store.TABLE}")
+    assert search_store.search(kb.oaw_engine, "sintered") == []
+
+    client.close_client(card.node_id)
+    reopened = client.open_client(card.node_id, card.storage_path)
+    hits = search_store.search(reopened.oaw_engine, "sintered")
+    assert hits and hits[0]["source_id"] == source_id
+
+
+def test_search_action_returns_attributable_excerpts_scoped_to_a_group(card):
+    source_id, _ = ingest_document(card, filename="sintering.md")
+    alloys = run(card, actions.groups, operation="create", name="Alloys")["group"]
+    ingested = run(card, actions.ingest, filename="alloy.md",
+                   content_base64=base64.b64encode(
+                       b"# Alloy notes\n\nA different microstructure entirely.\n").decode(),
+                   media_type="text/markdown", group_id=alloys["id"])
+    processed = run(card, actions.process_sources, source_ids=[ingested["source"]["id"]])
+    kb = client.open_client(card.node_id, card.storage_path)
+    job = kb.jobs.wait(processed["jobs"][0]["job"]["id"], timeout=60)
+    assert job.status == "COMPLETED", job.error
+
+    found = run(card, actions.search, query="sintered")["results"]
+    assert found and found[0]["source_id"] == source_id
+    assert found[0]["filename"] == "sintering.md"
+    assert found[0]["group_name"] == "Knowledge base"
+    assert "Method" in (found[0]["heading_path"] or "")
+
+    # Scoped to a group with nothing matching: no results, even though the term
+    # exists elsewhere in the base.
+    assert run(card, actions.search, query="sintered", group_id=alloys["id"])["results"] == []
+
+    # A no-op query (all whitespace or nothing meaningful) returns cleanly, not an error.
+    assert run(card, actions.search, query="   ")["results"] == []
+
+
 def test_conversion_job_is_idempotent(card):
     source_id, first = ingest_document(card)
     kb = client.open_client(card.node_id, card.storage_path)
@@ -94,6 +149,34 @@ def test_projection_requires_a_schema_shaped_definition(card):
     with pytest.raises(KnowledgeError):
         run(card, actions.schemas, operation="create", name="bad",
             definition={"type": "string"}, system_prompt="x")
+
+
+def test_schemas_default_to_literature_and_can_be_tagged_and_filtered(card):
+    literature = run(card, actions.schemas, operation="create", name="Process graph",
+                     definition=SCHEMA, system_prompt="x")["schema"]
+    assert literature["kind"] == "literature"
+
+    experiment = run(card, actions.schemas, operation="create", name="Synthesis run",
+                     definition=SCHEMA, system_prompt="x", kind="experiment")["schema"]
+    assert experiment["kind"] == "experiment"
+
+    # A schema created before "kind" existed carries MKB's own "freeform" purpose;
+    # that must still read back as literature, with no migration needed.
+    kb = client.open_client(card.node_id, card.storage_path)
+    legacy = kb.schemas.create(name="Legacy", domain="materials", definition=SCHEMA,
+                               system_prompt="x")
+    assert legacy.purpose == "freeform"
+    legacy_json = run(card, actions.schemas, operation="get", schema_id=str(legacy.id))["schema"]
+    assert legacy_json["kind"] == "literature"
+
+    all_names = {item["name"] for item in run(card, actions.schemas)["schemas"]}
+    assert all_names == {"Process graph", "Synthesis run", "Legacy"}
+    experiment_only = run(card, actions.schemas, kind="experiment")["schemas"]
+    assert [item["name"] for item in experiment_only] == ["Synthesis run"]
+
+    retagged = run(card, actions.schemas, operation="update", schema_id=experiment["id"],
+                   kind="literature")["schema"]
+    assert retagged["kind"] == "literature"
 
 
 def test_full_loop_publishes_only_approved_facts(card):
@@ -231,6 +314,50 @@ def test_an_unconvertible_upload_fails_in_the_job_not_the_action(card):
     assert listing[0]["markdown"] is None
     with pytest.raises(KnowledgeError):
         run(card, actions.markdown, source_id=submitted["source"]["id"])
+
+
+def test_an_image_upload_converts_through_a_configured_vision_engine(card, monkeypatch):
+    class _FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"choices": [{"message": {
+                "content": "Handwritten note: sample A1 fired at 1750 C."}}]}
+
+    class _FakeClient:
+        def __init__(self, timeout=None):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(self, url, headers=None, json=None):
+            return _FakeResponse()
+
+    monkeypatch.setenv("OAW_VISION_API_KEY", "test-key")
+    monkeypatch.setenv("OAW_VISION_BASE_URL", "https://vision.example/v1")
+    monkeypatch.setattr("httpx.Client", _FakeClient)
+
+    submitted = run(card, actions.ingest, filename="notebook.jpg",
+                    content_base64=base64.b64encode(b"fake-jpeg-bytes").decode(),
+                    media_type="image/jpeg")
+    processed = run(card, actions.process_sources, source_ids=[submitted["source"]["id"]])
+    kb = client.open_client(card.node_id, card.storage_path)
+    job = kb.jobs.wait(processed["jobs"][0]["job"]["id"], timeout=60)
+    assert job.status == "COMPLETED", job.error
+
+    document = run(card, actions.markdown, source_id=submitted["source"]["id"])
+    assert document["engine"] == "vision"
+    assert "1750 C" in document["markdown"]
+
+    # The vision transcription is searchable exactly like any other converted source.
+    from oaw_knowledge_base import search_store
+
+    hits = search_store.search(kb.oaw_engine, "handwritten note sample")
+    assert hits and hits[0]["source_id"] == submitted["source"]["id"]
 
 
 def test_jobs_report_progress_events(card):
@@ -372,3 +499,95 @@ def test_drafts_and_the_graph_stay_scoped_to_the_group_that_built_them(card):
     assert {item["name"] for item in scoped} == {"Cu"}
     scoped_alloy = run(card, actions.graph, group_id=alloys["id"])["entities"]
     assert {item["name"] for item in scoped_alloy} == {"Steel"}
+
+
+EXPERIMENT_SCHEMA = {
+    "type": "object", "required": ["sample_id", "conductivity"],
+    "properties": {"sample_id": {"type": "string"}, "conductivity": {"type": "number"}},
+}
+
+
+def _experiment_schema(card):
+    return run(card, actions.schemas, operation="create", name="Conductivity run",
+              definition=EXPERIMENT_SCHEMA, system_prompt="x", kind="experiment")["schema"]
+
+
+def _project(card, source_id, schema_id, data):
+    matching = next(item for item in run(card, actions.sources, all_groups=True)["sources"]
+                    if item["id"] == source_id)
+    return run(card, actions.save_projection, schema_id=schema_id, record_id=matching["record_id"],
+              data=data, model="test-model")["projection"]
+
+
+def test_assemble_merges_several_projections_into_one_experiment_record(card):
+    schema = _experiment_schema(card)
+    source_a, _ = ingest_document(card, text="# Run A\n\nSample A1, 1.2 S/cm.\n", filename="a.md")
+    source_b, _ = ingest_document(card, text="# Run B\n\nSample A1, 1.4 S/cm.\n", filename="b.md")
+    projection_a = _project(card, source_a, schema["id"],
+                            {"sample_id": "A1", "conductivity": 1.2})
+    projection_b = _project(card, source_b, schema["id"],
+                            {"sample_id": "A1", "conductivity": 1.4})
+
+    prompt = run(card, actions.experiment_assemble_prompt,
+                projection_ids=[projection_a["id"], projection_b["id"]])
+    assert prompt["schema_id"] == schema["id"]
+    assert {item["filename"] for item in prompt["contributions"]} == {"a.md", "b.md"}
+    assert {item["data"]["conductivity"] for item in prompt["contributions"]} == {1.2, 1.4}
+
+    merged = run(card, actions.experiment_save, schema_id=schema["id"], group_id=prompt["group_id"],
+                name="A1", data={"sample_id": "A1", "conductivity": 1.3},
+                conflicts=[{"field": "conductivity", "values": [
+                    {"value": 1.2, "source_id": prompt["contributions"][0]["source_id"]},
+                    {"value": 1.4, "source_id": prompt["contributions"][1]["source_id"]}]}],
+                evidence=[{"projection_id": item["projection_id"], "source_id": item["source_id"],
+                          "artifact_id": item["artifact_id"]} for item in prompt["contributions"]])["record"]
+    assert merged["status"] == "draft"
+    assert merged["revision"] == 1
+    assert merged["data"]["conductivity"] == 1.3
+    assert len(merged["conflicts"]) == 1
+    assert merged["validation"]["valid"] is True
+
+    listed = run(card, actions.experiments)["experiments"]
+    assert [item["name"] for item in listed] == ["A1"]
+
+    fetched = run(card, actions.experiments, operation="get", record_id=merged["id"])["experiment"]
+    assert len(fetched["evidence"]) == 2
+    assert {link["source_id"] for link in fetched["evidence"]} == {source_a, source_b}
+
+    confirmed = run(card, actions.experiment_update, operation="confirm", record_id=merged["id"],
+                    expected_revision=1)["experiment"]
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["revision"] == 2
+
+    with pytest.raises(KnowledgeError):
+        run(card, actions.experiment_update, operation="confirm", record_id=merged["id"],
+            expected_revision=1)
+
+
+def test_assemble_refuses_a_non_experiment_schema(card):
+    schema = run(card, actions.schemas, operation="create", name="Literature schema",
+                definition=SCHEMA, system_prompt="x")["schema"]
+    source_id, _ = ingest_document(card)
+    projection = _project(card, source_id, schema["id"], {"entities": [], "relations": []})
+    with pytest.raises(KnowledgeError):
+        run(card, actions.experiment_assemble_prompt, projection_ids=[projection["id"]])
+
+
+def test_assemble_refuses_projections_from_two_different_groups(card):
+    schema = _experiment_schema(card)
+    source_a, _ = ingest_document(card, filename="a.md")
+    alloys = run(card, actions.groups, operation="create", name="Alloys")["group"]
+    ingested = run(card, actions.ingest, filename="b.md",
+                   content_base64=base64.b64encode(DOCUMENT.encode()).decode(),
+                   media_type="text/markdown", group_id=alloys["id"])
+    processed = run(card, actions.process_sources, source_ids=[ingested["source"]["id"]])
+    kb = client.open_client(card.node_id, card.storage_path)
+    kb.jobs.wait(processed["jobs"][0]["job"]["id"], timeout=60)
+
+    projection_a = _project(card, source_a, schema["id"], {"sample_id": "A1", "conductivity": 1.0})
+    projection_b = _project(card, ingested["source"]["id"], schema["id"],
+                            {"sample_id": "A1", "conductivity": 1.0})
+    with pytest.raises(KnowledgeError):
+        run(card, actions.experiment_assemble_prompt,
+            projection_ids=[projection_a["id"], projection_b["id"]])
+
