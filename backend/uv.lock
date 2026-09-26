@@ -1520,7 +1520,7 @@ wheels = [
 [[package]]
 name = "mat-know-base"
 version = "0.1.0"
-source = { editable = "../../mat_know_base" }
+source = { directory = "../../mat_know_base" }
 dependencies = [
     { name = "pydantic", version = "2.12.5", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "python_full_version < '3.14'" },
     { name = "pydantic", version = "2.13.5", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "python_full_version >= '3.14'" },
@@ -1988,7 +1988,7 @@ requires-dist = [
     { name = "google-adk", marker = "extra == 'adk'", specifier = ">=2.8,<3" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.74,<2" },
-    { name = "mat-know-base", marker = "extra == 'knowledge'", editable = "../../mat_know_base" },
+    { name = "mat-know-base", marker = "extra == 'knowledge'", directory = "../../mat_know_base" },
     { name = "packaging", specifier = ">=24,<27" },
     { name = "pydantic", specifier = ">=2.11,<3" },
     { name = "pymupdf4llm", marker = "extra == 'knowledge'", specifier = ">=0.0.17" },

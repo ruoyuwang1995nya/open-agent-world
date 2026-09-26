@@ -25,10 +25,12 @@ knowledge = [
 ]
 
 [tool.uv.sources]
-# Interim: the plugin needs mat_know_base changes that are not yet pushed (the
-# knowledge repository and the file object store). Switch to the published repo
-# once they land: { git = "https://github.com/theAfish/mat_know_base.git" }
-mat-know-base = { path = "/home/ruoyu/projects/mat_know_base", editable = true }
+# Built from the local checkout, not editable: mat-know-base is a fixed, ready-to-use
+# dependency here. Any behavior the knowledge base plugin needs beyond what it already
+# provides belongs in the plugin itself, not in edits to this package. Switch to the
+# published repo once it carries everything this pins:
+# { git = "https://github.com/theAfish/mat_know_base.git" }
+mat-know-base = { path = "/home/ruoyu/projects/mat_know_base" }
 
 [dependency-groups]
 dev = [
