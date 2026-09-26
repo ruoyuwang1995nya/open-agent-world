@@ -49,6 +49,18 @@ Stop the server with **Ctrl+C**; running the same command again reuses the same
 deployment data (uploaded documents, conversion jobs, drafts and the published
 graph all persist, exactly as [documented for the card](../../plugins/knowledge_base/README.md#persistence-and-failure-behavior)).
 
+## Troubleshooting uploads and conversion
+
+The deployment server's request and error log is at
+`.open-agent-world/examples/knowledge-legion-deploy/runtime/logs/launcher.log`
+(or `<data-root>/runtime/logs/launcher.log` with a custom data root). Follow it
+with `tail -f .open-agent-world/examples/knowledge-legion-deploy/runtime/logs/launcher.log`.
+An upload should produce a `POST .../resource/ingest` entry. Upload errors also
+appear above the Knowledge base workspace; uploads do not create conversion jobs.
+After uploading, select a source and press **Process**. The **Sources → Conversion
+jobs** list shows each job's status; select a job to see its detailed progress and
+error events. PDF files must be no larger than 32 MiB.
+
 ## Turning it into a working knowledge base
 
 The sample document, schema and projection are there so the workspace is not empty

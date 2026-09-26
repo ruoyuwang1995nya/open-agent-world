@@ -1,13 +1,17 @@
-.knowledge-app, .knowledge-preview { --knowledge-accent: #6b4fb0; color: var(--ink); font-size: 13px; }
-:root[data-theme="dark"] .knowledge-app, :root[data-theme="dark"] .knowledge-preview { --knowledge-accent: #c2aef2; }
+/* ".knowledge-section" is duplicated onto an inner wrapper div in index.tsx, not just the
+ * WorkspaceSection it is passed to: a detached section (opened as its own tab) is portaled
+ * straight into that tab, past ".knowledge-app" entirely, so these base rules are scoped to
+ * both classes to keep working whether a section renders inline or detached. */
+.knowledge-app, .knowledge-preview, .knowledge-section { --knowledge-accent: #6b4fb0; color: var(--ink); font-size: 13px; }
+:root[data-theme="dark"] :is(.knowledge-app, .knowledge-preview, .knowledge-section) { --knowledge-accent: #c2aef2; }
 .knowledge-app { container-type: inline-size; display: flex; flex-direction: column; gap: 10px; height: 100%; min-height: 420px; overflow: auto; }
-.knowledge-app button { font: inherit; color: inherit; background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
-.knowledge-app button:hover { background: var(--surface-soft); }
-.knowledge-app button:disabled { opacity: .45; cursor: default; }
-.knowledge-app button:focus-visible, .knowledge-app input:focus-visible, .knowledge-app textarea:focus-visible, .knowledge-app select:focus-visible { outline: 2px solid var(--knowledge-accent); outline-offset: 2px; }
-.knowledge-app input, .knowledge-app select, .knowledge-app textarea { font: inherit; color: var(--ink); background: var(--card-surface); border: 1px solid var(--line-strong); border-radius: 6px; padding: 5px 8px; box-sizing: border-box; max-width: 100%; }
-.knowledge-app textarea { width: 100%; resize: vertical; font: 12px/1.6 ui-monospace, Consolas, monospace; }
-.knowledge-app label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-soft); min-width: 0; }
+:is(.knowledge-app, .knowledge-section) button { font: inherit; color: inherit; background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+:is(.knowledge-app, .knowledge-section) button:hover { background: var(--surface-soft); }
+:is(.knowledge-app, .knowledge-section) button:disabled { opacity: .45; cursor: default; }
+:is(.knowledge-app, .knowledge-section) button:focus-visible, :is(.knowledge-app, .knowledge-section) input:focus-visible, :is(.knowledge-app, .knowledge-section) textarea:focus-visible, :is(.knowledge-app, .knowledge-section) select:focus-visible { outline: 2px solid var(--knowledge-accent); outline-offset: 2px; }
+:is(.knowledge-app, .knowledge-section) input, :is(.knowledge-app, .knowledge-section) select, :is(.knowledge-app, .knowledge-section) textarea { font: inherit; color: var(--ink); background: var(--card-surface); border: 1px solid var(--line-strong); border-radius: 6px; padding: 5px 8px; box-sizing: border-box; max-width: 100%; }
+:is(.knowledge-app, .knowledge-section) textarea { width: 100%; resize: vertical; font: 12px/1.6 ui-monospace, Consolas, monospace; }
+:is(.knowledge-app, .knowledge-section) label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-soft); min-width: 0; }
 
 .knowledge-badge { color: var(--knowledge-accent); border: 1px solid #8a6fd155; background: #8a6fd115; border-radius: 5px; padding: 3px 7px; font-size: 11px; letter-spacing: .03em; }
 .knowledge-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 14px; border-bottom: 1px solid var(--line); }
@@ -25,9 +29,14 @@
 .knowledge-empty { color: var(--ink-soft); line-height: 1.6; }
 
 .knowledge-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; align-items: start; padding: 0 14px 14px; }
-.knowledge-section { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--card-surface); }
-.knowledge-wide { grid-column: span 2; }
-@container (max-width: 700px) { .knowledge-wide { grid-column: span 1; } }
+.knowledge-section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+/* Only the outer WorkspaceSection wrapper (always ".workspace-section.knowledge-section"
+ * together) is the grid card and gets its border/background/padding; the inner content
+ * wrapper reuses ".knowledge-section" only for the color scope and flex layout above, so
+ * a detached section's tab does not end up with a border nested inside another border. */
+.workspace-section.knowledge-section { padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--card-surface); }
+.workspace-section.knowledge-wide { grid-column: span 2; }
+@container (max-width: 700px) { .workspace-section.knowledge-wide { grid-column: span 1; } }
 .knowledge-section h3 { margin: 0; font-size: 13px; }
 .knowledge-section h4 { margin: 10px 0 6px; font-size: 12px; color: var(--ink-soft); }
 

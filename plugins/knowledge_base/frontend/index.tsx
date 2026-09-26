@@ -404,6 +404,9 @@ export function Workspace({ host, card }: PluginViewProps) {
 
     <div className="knowledge-grid">
       {!deployed && <WorkspaceSection id="settings" title={t("Settings")} className="knowledge-section knowledge-settings-section">
+        {/* A detached section is portaled straight into its own tab, past ".knowledge-app": this
+            wrapper carries the same classes so base colors and control styling still apply there. */}
+        <div className="knowledge-section knowledge-settings-section">
         <label>{t("Collection name")}
           <input value={current.collection_name} disabled={busy}
             onChange={event => setSettings({ ...current, collection_name: event.target.value })}
@@ -430,11 +433,24 @@ export function Workspace({ host, card }: PluginViewProps) {
           </select>
         </label>
         <small>{t("A published deployment has no live model picker, so Project to JSON there always uses this one.")}</small>
+        </div>
       </WorkspaceSection>}
       <WorkspaceSection id="sources" title={t("Sources")} className="knowledge-section">
+        <div className="knowledge-section">
         <h3>{t("Sources")}</h3>
         <div className="knowledge-groupbar">
+          {/* The toolbar's own group picker lives outside every section, so a layout that
+              places Sources into its own tab (as a deployment does) can leave it with no way
+              to switch groups at all; this copy keeps that control reachable right here. */}
           {!groupEditing ? <div className="knowledge-formbar">
+            <label className="knowledge-groupselect">{t("Group")}
+              <select value={activeGroup} disabled={busy}
+                onChange={event => { setActiveGroup(event.target.value); setGroupEditing(false); }}>
+                <option value="">{t("All groups")}</option>
+                {groups.map(item => <option key={item.id} value={item.id}>
+                  {item.name}{item.is_default ? ` (${t("default")})` : ""}</option>)}
+              </select>
+            </label>
             <button type="button" disabled={busy} onClick={() => { setGroupName(""); setGroupEditing(true); }}>
               {t("New group")}</button>
             {activeGroupObject && <button type="button" disabled={busy}
@@ -453,9 +469,9 @@ export function Workspace({ host, card }: PluginViewProps) {
         </div>
         <label className="knowledge-upload">{t("Add documents")}
           <input type="file" multiple disabled={busy} onChange={event => {
-            const files = event.target.files;
+            const files = Array.from(event.target.files ?? []);
             event.target.value = "";
-            if (files?.length) void upload(files);
+            if (files.length) void upload(files);
           }} />
         </label>
         <small>{t("PDF, markdown, text, CSV or JSON up to 32 MiB each. Uploads stay unconverted until you process them below, alone or in a batch.")}</small>
@@ -505,9 +521,11 @@ export function Workspace({ host, card }: PluginViewProps) {
             </li>)}
           </ul>
         </div>}
+        </div>
       </WorkspaceSection>
 
       <WorkspaceSection id="markdown" title={t("Markdown")} className={`knowledge-section${markdownInline ? " knowledge-wide" : ""}`}>
+        <div className={`knowledge-section${markdownInline ? " knowledge-wide" : ""}`}>
         <h3>{t("Markdown")}</h3>
         {!currentSource ? <p className="knowledge-empty">{t("Select a source to read its extracted markdown.")}</p> : <>
           <div className="knowledge-projectbar">
@@ -537,9 +555,11 @@ export function Workspace({ host, card }: PluginViewProps) {
             {extracted.has_more && <button type="button" disabled={busy} onClick={() => void extend()}>{t("Load more")}</button>}
           </>}
         </>}
+        </div>
       </WorkspaceSection>
 
       <WorkspaceSection id="schemas" title={t("Schemas")} className="knowledge-section">
+        <div className="knowledge-section">
         <h3>{t("Schemas")}</h3>
         <p className="knowledge-meta">{t("A schema is a JSON Schema plus the system prompt used to extract it.")}</p>
         <ul className="knowledge-list">
@@ -568,9 +588,11 @@ export function Workspace({ host, card }: PluginViewProps) {
             <button type="button" disabled={busy} onClick={() => setEditor(undefined)}>{t("Cancel")}</button>
           </div>
         </div>}
+        </div>
       </WorkspaceSection>
 
       <WorkspaceSection id="projections" title={t("Projections")} className="knowledge-section">
+        <div className="knowledge-section">
         <h3>{t("Projections")}</h3>
         <p className="knowledge-meta">{t("Structured extractions. A projection is a candidate until a person approves a draft built from it.")}</p>
         {!projections.length && <p className="knowledge-empty">{t("No projections yet.")}</p>}
@@ -598,9 +620,11 @@ export function Workspace({ host, card }: PluginViewProps) {
             v0: projection.evidence.map(link => shortId(link.source_id)).join(", ") || "—" })}</p>
           <pre>{pretty(projection.data)}</pre>
         </div>}
+        </div>
       </WorkspaceSection>
 
       <WorkspaceSection id="review" title={t("Review")} className="knowledge-section">
+        <div className="knowledge-section">
         <h3>{t("Review")}</h3>
         <p className="knowledge-meta">{t("Approving publishes a fact revision and is the only thing that writes the graph.")}</p>
         {!drafts.length && <p className="knowledge-empty">{t("No drafts yet. Select projections to build one.")}</p>}
@@ -636,9 +660,11 @@ export function Workspace({ host, card }: PluginViewProps) {
               onClick={() => void decide("reject")}>{t("Reject")}</button>
           </div>}
         </div>}
+        </div>
       </WorkspaceSection>
 
       <WorkspaceSection id="graph" title={t("Graph")} className="knowledge-section knowledge-wide">
+        <div className="knowledge-section knowledge-wide">
         <h3>{t("Knowledge graph")}</h3>
         <div className="knowledge-formbar">
           <label>{t("Filter by name")}<input value={filter} disabled={busy}
@@ -682,6 +708,7 @@ export function Workspace({ host, card }: PluginViewProps) {
             </div>
           </div>
         </>}
+        </div>
       </WorkspaceSection>
     </div>
   </div>;

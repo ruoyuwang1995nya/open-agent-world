@@ -105,6 +105,23 @@ it("uploads a document and reads its markdown once a batch process job finishes"
   expect(await screen.findByText("# Sintering of Si3N4")).toBeTruthy();
 });
 
+it("uploads selected files even when resetting the file input clears its FileList", async () => {
+  const action = open(async () => undefined);
+  const input = await screen.findByLabelText("Add documents") as HTMLInputElement;
+  const file = new File(["%PDF-1.4"], "sample.pdf", { type: "application/pdf" });
+  const selected: File[] = [file];
+  Object.defineProperty(input, "files", { get: () => selected });
+  Object.defineProperty(input, "value", {
+    get: () => selected.length ? "C:\\fakepath\\sample.pdf" : "",
+    set: (value: string) => { if (value === "") selected.length = 0; },
+  });
+
+  fireEvent.change(input);
+
+  await waitFor(() => expect(action).toHaveBeenCalledWith("ingest", expect.objectContaining({
+    filename: "sample.pdf", media_type: "application/pdf" }), undefined));
+});
+
 it("projects the selected document through the host bridge, never the plugin", async () => {
   const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({
     projection: { id: "projection-1", validation: { valid: true } },
