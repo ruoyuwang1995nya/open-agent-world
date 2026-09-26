@@ -23,6 +23,8 @@
 .knowledge-settings-section { font-size: 12px; }
 .knowledge-settings-section > label, .knowledge-settings-section > small, .knowledge-settings-section > p { margin: 8px 0 0; max-width: 340px; }
 .knowledge-settings-section small, .knowledge-settings-section p { color: var(--ink-soft); font-size: 11px; line-height: 1.5; }
+.knowledge-agent-model { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 0; max-width: 340px; }
+.knowledge-agent-model > span { font-weight: 600; }
 
 /* The left rail switches which workflow (Literature/Experiment/Settings) is showing;
  * the tab strip beneath the toolbar then switches within whichever one is active. Both
@@ -68,6 +70,7 @@
 
 .knowledge-upload { font-size: 12px; }
 .knowledge-section > small { color: var(--ink-soft); font-size: 11px; line-height: 1.5; }
+.knowledge-search-inline { border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
 .knowledge-projectbar, .knowledge-formbar { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
 .knowledge-primary { background: #8a6fd130; border-color: #8a6fd170; }
 .knowledge-markdown { max-height: 320px; overflow: auto; }

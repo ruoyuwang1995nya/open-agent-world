@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import type { PluginViewProps } from "./sdk";
 import { useWorldStore } from "../state/worldStore";
+import type { WorldCard, WorldEdge } from "../types/world";
 import plugin from "../../../plugins/knowledge_base/frontend";
 
 vi.mock("@oaw/plugin-api", () => ({
@@ -59,6 +60,8 @@ const open = (handler: Action, overrides: { card?: Record<string, unknown>; host
   return action;
 };
 
+const ORIGINAL_UPDATE_CARD = useWorldStore.getState().updateCard;
+
 beforeEach(() => {
   // The Graph section draws a React Flow map, which measures itself on mount.
   vi.stubGlobal("ResizeObserver", class {
@@ -70,7 +73,13 @@ beforeEach(() => {
     models: [{ id: "model-1", name: "gpt-4o", model_id: "gpt-4o", enabled: true }],
   }] } });
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => {
+  cleanup(); vi.unstubAllGlobals();
+  // A test may stand in for edges/cards/updateCard to exercise the Settings
+  // section's "Connected agents" picker; every other test expects the real,
+  // empty-by-default world, so put it back.
+  useWorldStore.setState({ edges: [], cards: [], updateCard: ORIGINAL_UPDATE_CARD });
+});
 
 it("still shows sources and groups when an older release has not published \"experiments\"", async () => {
   // A release published before Experiments existed grants no "experiments" resource
@@ -152,8 +161,7 @@ it("searches converted documents and shows attributable excerpts", async () => {
     ] };
     return undefined;
   });
-  fireEvent.click(await screen.findByRole("tab", { name: "Search" }));
-  const region = within(await screen.findByRole("region", { name: "Search" }));
+  const region = within(await screen.findByRole("region", { name: "Sources" }));
 
   fireEvent.change(region.getByPlaceholderText("Search converted documents…"), {
     target: { value: "sintering temperature" } });
@@ -170,8 +178,7 @@ it("shows a search error inline instead of crashing the workspace", async () => 
     if (name === "search") throw new Error("search index is not ready");
     return undefined;
   });
-  fireEvent.click(await screen.findByRole("tab", { name: "Search" }));
-  const region = within(await screen.findByRole("region", { name: "Search" }));
+  const region = within(await screen.findByRole("region", { name: "Sources" }));
 
   fireEvent.change(region.getByPlaceholderText("Search converted documents…"), {
     target: { value: "anything" } });
@@ -292,6 +299,50 @@ it("surfaces a failed conversion with the step that failed", async () => {
   fireEvent.click(await screen.findByRole("button", { name: /job-1.*FAILED/ }));
   expect(await screen.findByText("convert")).toBeTruthy();
   expect(screen.getAllByRole("alert").some(node => node.textContent?.includes("scan.bin"))).toBe(true);
+});
+
+it("projects several selected, already-converted sources against one schema in a batch", async () => {
+  const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({
+    projection: { id: "projection-x", validation: { valid: true } } }) }));
+  vi.stubGlobal("fetch", fetchMock);
+  const OTHER = { ...CONVERTED, id: "source-2", filename: "other.md", record_id: "record-2" };
+  const action = open(async name => {
+    if (name === "sources") return { sources: [CONVERTED, OTHER] };
+    if (name === "schemas") return { schemas: [SCHEMA] };
+    return undefined;
+  });
+  const region = within(await screen.findByRole("region", { name: "Sources" }));
+
+  fireEvent.click(await region.findByLabelText("Select sintering.md"));
+  fireEvent.click(region.getByLabelText("Select other.md"));
+  fireEvent.change(region.getByLabelText("Extraction schema"), { target: { value: "schema-1" } });
+  fireEvent.click(region.getByRole("button", { name: "Project 2 selected" }));
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  const recordIds = (fetchMock.mock.calls as unknown as [string, RequestInit][]).map(([, init]) =>
+    JSON.parse(String(init.body)).record_id);
+  expect(recordIds.sort()).toEqual(["record-1", "record-2"]);
+  expect(action.mock.calls.some(([name]) => name === "save_projection")).toBe(false);
+  expect(await region.findByText("Projected 2 selected source(s)")).toBeTruthy();
+});
+
+it("lets an engineer pick a connected agent's model from the Knowledge card's Settings", async () => {
+  const updateCard = vi.fn();
+  useWorldStore.setState({
+    edges: [{ id: "edge-1", source: "agent-1", target: "card-1",
+      relationship: "knowledge.base.read", direction: "forward" } as WorldEdge],
+    cards: [{ id: "agent-1", type: "agent", name: "Librarian", position: { x: 0, y: 0 },
+      size: { width: 240, height: 180 }, expanded: false, status: "available",
+      config: { model: "oaw:model:model-1" } } as WorldCard],
+    updateCard,
+  });
+  open(async () => undefined);
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  const region = within(await screen.findByRole("region", { name: "Settings" }));
+
+  expect(await region.findByText("Librarian")).toBeTruthy();
+  fireEvent.change(region.getByLabelText("Librarian’s model"), { target: { value: "oaw:default" } });
+  expect(updateCard).toHaveBeenCalledWith("agent-1", { config: { model: "oaw:default" } });
 });
 
 it("hides engineering settings and posts through the deployment bridge when deployed", async () => {

@@ -103,23 +103,24 @@ ever shows.
    small **Markdown** button next to its entry opens the extracted markdown (a real
    table for spreadsheets, a model's transcription for images) right there, together
    with the schema and model pickers and **Project to JSON** — there is no separate
-   Markdown tab.
-2. **Search** — full-text search across every already-converted document at once,
-   ranked, each result carrying the source filename and the heading it falls under.
-   Raw document text, not a verified fact — a result opens the source in Sources,
-   where the whole document is one click away.
-3. **Schemas** — a schema is a JSON Schema object plus the system prompt used to
+   Markdown tab. Sources also holds full-text **search** over every already-converted
+   document — ranked, each result carrying the source filename and the heading it
+   falls under, and a click jumps straight to that source — and a batch **Project
+   {n} selected** button next to Process: pick a schema (and, outside a deployment, a
+   model) once and project every selected, already-converted source against it in
+   one pass, no need to open each one individually.
+2. **Schemas** — a schema is a JSON Schema object plus the system prompt used to
    extract it, tagged **literature** (projections build a draft for the graph) or
    **experiment** (projections assemble into one experiment record). Reachable from
    both workflows, since the two share the same schema collection. Reuse one before
    creating a near-duplicate.
-4. **Projections** — structured extractions, each linked by evidence back to the
+3. **Projections** — structured extractions, each linked by evidence back to the
    markdown artifact and the original file. Select one or more **literature**
    projections from the **same group** and **Build draft**.
-5. **Review** — read the proposed graph, then submit, reject, or approve.
+4. **Review** — read the proposed graph, then submit, reject, or approve.
    Approving asks for an explicit confirmation and is the **only** thing that
    writes the knowledge graph.
-6. **Graph** — the published graph, drawn as a map: click an entity to read its
+5. **Graph** — the published graph, drawn as a map: click an entity to read its
    type and properties beside it, double-click to traverse outward from it. The
    name filter and the entity list stay beside the map.
 
@@ -314,6 +315,16 @@ cannot pass desktop confirmation arguments. `knowledge_overview` still reports e
 group by name and count, and every read tool accepts an optional `group_id` to
 narrow its answer to one group, so the Librarian can talk about how the base is
 organized without being able to reorganize it.
+
+Every Agent connected by a Knowledge read or Knowledge extract edge is listed under
+**Connected agents** in the engineering Settings section, each with its own model
+picker — the same catalog of connections configured on the canvas. This exists
+because the Agent's own card is not part of this workspace's layout, so there would
+otherwise be no way to change which model it answers with without leaving the
+Knowledge research workspace to find that card on the canvas. Changing it here edits
+the Agent's own `model` field directly (`updateCard`, exactly what its own card's
+picker would do) — it changes what that Agent uses everywhere, not just in this one
+conversation.
 
 ## Persistence and failure behavior
 

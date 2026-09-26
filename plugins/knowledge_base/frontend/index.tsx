@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useWorldStore } from "../../../frontend/src/state/worldStore";
 import { availableModels } from "../../../frontend/src/state/modelConnections";
 import { deploymentApiBase } from "../../../frontend/src/deployment/api";
+import { ModelSelect } from "../../../frontend/src/cards/ModelSelect";
 import { GraphMap } from "./GraphMap";
 import "./style.css";
 
@@ -52,10 +53,10 @@ type Pending = { args: Record<string, unknown>; reasons: string[] };
  * shared-infrastructure workflow that reuses Schemas from the same collection.
  * Settings only ever appears for the engineering view. */
 type Category = "literature" | "experiment" | "settings";
-type LiteratureTab = "sources" | "search" | "schemas" | "projections" | "review" | "graph";
+type LiteratureTab = "sources" | "schemas" | "projections" | "review" | "graph";
 type ExperimentTab = "experiments" | "schemas";
 const LITERATURE_TABS: { id: LiteratureTab; label: () => string }[] = [
-  { id: "sources", label: () => t("Sources") }, { id: "search", label: () => t("Search") },
+  { id: "sources", label: () => t("Sources") },
   { id: "schemas", label: () => t("Schemas") }, { id: "projections", label: () => t("Projections") },
   { id: "review", label: () => t("Review") }, { id: "graph", label: () => t("Graph") },
 ];
@@ -185,6 +186,15 @@ export function Workspace({ host, card }: PluginViewProps) {
   const [model, setModel] = useState("");
   const selectedModel = deployed ? defaultModel
     : models.some(item => item.value === model) ? model : (models[0]?.value ?? "");
+  // A deployment never carries edges (only the flattened permissions grant), and
+  // this is engineering-only anyway, so an empty list there is both correct and safe.
+  const worldEdges = useWorldStore(state => state.edges);
+  const worldCards = useWorldStore(state => state.cards);
+  const updateCard = useWorldStore(state => state.updateCard);
+  const connectedAgents = deployed ? [] : worldEdges
+    .filter(edge => edge.target === card.id && edge.relationship.startsWith("knowledge.base."))
+    .map(edge => worldCards.find(item => item.id === edge.source && item.type === "agent"))
+    .filter((item): item is NonNullable<typeof item> => !!item);
 
   const call = useCallback((action: string, args: Record<string, unknown> = {}, confirm?: boolean) =>
     host.resourceAction(action, args, confirm), [host]);
@@ -361,6 +371,30 @@ export function Workspace({ host, card }: PluginViewProps) {
     await refresh();
   });
 
+  // Same call as "Project to JSON" above, just run once per selected, already-
+  // converted source instead of the one currently open — so a batch of sources
+  // never needs opening each one's markdown just to project it.
+  const projectSelected = () => perform(async () => {
+    if (!schemaId) throw new Error(t("Choose an extraction schema first"));
+    if (!selectedModel) throw new Error(deployed
+      ? t("This deployment has no default model configured yet")
+      : t("Configure a model connection first"));
+    const targets = projectableSources;
+    if (!targets.length) throw new Error(t("Select at least one converted source first"));
+    let invalid = 0;
+    for (const source of targets) {
+      const result = await request(`knowledge/${card.id}/project`, {
+        schema_id: schemaId, model: selectedModel, record_id: source.record_id }, deployed);
+      const projection = result.projection as { validation?: { valid?: boolean } };
+      if (projection.validation?.valid === false) invalid++;
+    }
+    setNotice(invalid
+      ? t("Projected {v0} selected source(s); {v1} do not satisfy the schema", { v0: targets.length, v1: invalid })
+      : t("Projected {v0} selected source(s)", { v0: targets.length }));
+    setSelectedSources([]);
+    await refresh();
+  });
+
   const saveSchema = () => editor && perform(async () => {
     let definition: unknown;
     try { definition = JSON.parse(editor.definition); }
@@ -495,6 +529,9 @@ export function Workspace({ host, card }: PluginViewProps) {
   const groups = overview?.groups ?? [];
   const activeGroupObject = groups.find(item => item.id === activeGroup);
   const pendingSources = sources.filter(item => !item.markdown);
+  // Only a converted source has a record to project; an unconverted one is
+  // silently excluded from the count and from the batch action itself.
+  const projectableSources = sources.filter(item => selectedSources.includes(item.id) && item.record_id);
   const experimentSchemaIds = new Set(schemas.filter(item => item.kind === "experiment").map(item => item.id));
   const experimentProjections = projections.filter(item => experimentSchemaIds.has(item.schema_id));
 
@@ -575,6 +612,16 @@ export function Workspace({ host, card }: PluginViewProps) {
           </select>
         </label>
         <small>{t("A published deployment has no live model picker, so Project to JSON there always uses this one.")}</small>
+        <h4>{t("Connected agents")}</h4>
+        {!connectedAgents.length
+          ? <p className="knowledge-meta">{t("No Agent is wired to this base yet — connect one with a Knowledge read or Knowledge extract edge on the canvas.")}</p>
+          : connectedAgents.map(agent => <div key={agent.id} className="knowledge-agent-model">
+              <span>{agent.name}</span>
+              <ModelSelect label={t("{v0}’s model", { v0: agent.name })}
+                value={String(agent.config?.model ?? "oaw:default")}
+                onChange={value => void updateCard(agent.id, { config: { model: value } })} />
+            </div>)}
+        <small>{t("This is the same model catalog configured on the canvas — it changes what the Agent itself uses to answer, in every conversation, not just this one.")}</small>
         </div>
       </WorkspaceSection>}
       {category === "literature" && literatureTab === "sources" && <WorkspaceSection id="sources" title={t("Sources")} className="knowledge-section">
@@ -618,6 +665,30 @@ export function Workspace({ host, card }: PluginViewProps) {
           }} />
         </label>
         <small>{t("PDF, markdown, text, CSV, TSV, Excel (.xlsx), images or JSON up to 32 MiB each. Uploads stay unconverted until you process them below, alone or in a batch.")}</small>
+
+        {/* Folded in from what used to be its own "Search" tab: Sources already
+            has almost every source-level action, so full-text search over the
+            converted documents belongs right here too, not behind another tab. */}
+        <div className="knowledge-search-inline">
+          <div className="knowledge-formbar">
+            <input value={searchQuery} disabled={busy} placeholder={t("Search converted documents…")}
+              onChange={event => setSearchQuery(event.target.value)}
+              onKeyDown={event => { if (event.key === "Enter") void runSearch(); }} />
+            <button type="button" disabled={busy || !searchQuery.trim()}
+              onClick={() => void runSearch()}>{t("Search")}</button>
+          </div>
+          {searchError && <p role="alert" className="knowledge-error">{searchError}</p>}
+          {searchResults && !searchResults.length && <p className="knowledge-empty">{t("No matches.")}</p>}
+          {!!searchResults?.length && <ul className="knowledge-list">
+            {searchResults.map((item, index) => <li key={index}>
+              <button type="button" onClick={() => viewSource(item.source_id)}>
+                <span>{item.filename ?? shortId(item.source_id)}{item.group_name ? ` · ${item.group_name}` : ""}</span>
+                <small>{item.heading_path || t("(no heading)")} · {item.excerpt.slice(0, 160)}</small>
+              </button>
+            </li>)}
+          </ul>}
+        </div>
+
         {!sources.length && <p className="knowledge-empty">{t("Nothing uploaded yet.")}</p>}
         <ul className="knowledge-list">
           {sources.map(item => <li key={item.id} className="knowledge-checkrow">
@@ -646,24 +717,36 @@ export function Workspace({ host, card }: PluginViewProps) {
             onClick={() => void processPending()}>
             {t("Process all pending ({v0})", { v0: pendingSources.length })}</button>
         </div>
+        {/* Projecting no longer needs a document open first: pick a schema (and,
+            outside a deployment, a model) once and project every selected,
+            already-converted source against it in one go. */}
+        <div className="knowledge-formbar">
+          <label>{t("Extraction schema")}
+            <select value={schemaId} disabled={busy} onChange={event => setSchemaId(event.target.value)}>
+              <option value="">{t("Choose a schema")}</option>
+              {schemas.map(item => <option key={item.id} value={item.id}>{item.name} v{item.version}</option>)}
+            </select>
+          </label>
+          {deployed
+            ? <p className="knowledge-meta">{t("Model: {v0}", { v0: defaultModel || t("none configured") })}</p>
+            : <label>{t("Model")}
+                <select value={selectedModel} disabled={busy || !models.length} onChange={event => setModel(event.target.value)}>
+                  {!models.length && <option value="">{t("No model configured")}</option>}
+                  {models.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+                </select>
+              </label>}
+          <button type="button" className="knowledge-primary"
+            disabled={busy || !schemaId || !selectedModel || !projectableSources.length}
+            onClick={() => void projectSelected()}>
+            {t("Project {v0} selected", { v0: projectableSources.length })}</button>
+        </div>
 
         {currentSource && <div className="knowledge-detail">
           <h4>{t("Extracted markdown — {v0}", { v0: currentSource.filename })}</h4>
           <div className="knowledge-projectbar">
-            <label>{t("Extraction schema")}
-              <select value={schemaId} disabled={busy} onChange={event => setSchemaId(event.target.value)}>
-                <option value="">{t("Choose a schema")}</option>
-                {schemas.map(item => <option key={item.id} value={item.id}>{item.name} v{item.version}</option>)}
-              </select>
-            </label>
-            {deployed
-              ? <p className="knowledge-meta">{t("Model: {v0}", { v0: defaultModel || t("none configured") })}</p>
-              : <label>{t("Model")}
-                  <select value={selectedModel} disabled={busy || !models.length} onChange={event => setModel(event.target.value)}>
-                    {!models.length && <option value="">{t("No model configured")}</option>}
-                    {models.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
-                  </select>
-                </label>}
+            {/* Uses the same schema and model chosen just above, for the batch
+                action — one picker, whether you project one open document or
+                several selected sources at once. */}
             <button type="button" className="knowledge-primary" disabled={busy || !extracted || !schemaId || !selectedModel}
               onClick={() => void project()}>{busy ? t("Working…") : t("Project to JSON")}</button>
             <button type="button" onClick={() => setSelectedSource("")}>{t("Close")}</button>
@@ -698,31 +781,6 @@ export function Workspace({ host, card }: PluginViewProps) {
             </li>)}
           </ul>
         </div>}
-        </div>
-      </WorkspaceSection>}
-
-      {category === "literature" && literatureTab === "search" && <WorkspaceSection id="search" title={t("Search")} className="knowledge-section">
-        <div className="knowledge-section">
-        <h3>{t("Search")}</h3>
-        <Banner error={error} notice={notice} />
-        <p className="knowledge-meta">{t("Full-text search across every converted document. Results are raw document text, not published facts — open a result to read the full document in Sources.")}</p>
-        <div className="knowledge-formbar">
-          <input value={searchQuery} disabled={busy} placeholder={t("Search converted documents…")}
-            onChange={event => setSearchQuery(event.target.value)}
-            onKeyDown={event => { if (event.key === "Enter") void runSearch(); }} />
-          <button type="button" className="knowledge-primary" disabled={busy || !searchQuery.trim()}
-            onClick={() => void runSearch()}>{t("Search")}</button>
-        </div>
-        {searchError && <p role="alert" className="knowledge-error">{searchError}</p>}
-        {searchResults && !searchResults.length && <p className="knowledge-empty">{t("No matches.")}</p>}
-        <ul className="knowledge-list">
-          {(searchResults ?? []).map((item, index) => <li key={index}>
-            <button type="button" onClick={() => viewSource(item.source_id)}>
-              <span>{item.filename ?? shortId(item.source_id)}{item.group_name ? ` · ${item.group_name}` : ""}</span>
-              <small>{item.heading_path || t("(no heading)")} · {item.excerpt.slice(0, 160)}</small>
-            </button>
-          </li>)}
-        </ul>
         </div>
       </WorkspaceSection>}
 
