@@ -99,30 +99,34 @@ ever shows.
    Uploading never converts a file on its own: select one or more sources and press
    **Process** — alone or in a batch — to queue their markdown conversion. The
    conversion jobs and their progress or failures live in this same section, right
-   below the source list, not in a tab of their own. Once a source is converted, a
-   small **Markdown** button next to its entry opens the extracted markdown (a real
-   table for spreadsheets, a model's transcription for images) right there, together
-   with the schema and model pickers and **Project to JSON** — there is no separate
-   Markdown tab. Sources also holds full-text **search** over every already-converted
-   document — ranked, each result carrying the source filename and the heading it
-   falls under, and a click jumps straight to that source — and a batch **Project
-   {n} selected** button next to Process: pick a schema (and, outside a deployment, a
-   model) once and project every selected, already-converted source against it in
-   one pass, no need to open each one individually.
+   below the source list, not in a tab of their own. Sources also holds full-text
+   **search** over every already-converted document — ranked, each result carrying
+   the source filename and the heading it falls under, and a click jumps straight
+   to that source. Once a source is converted, a small **Markdown** button next to
+   its entry opens the extracted markdown (a real table for spreadsheets, a
+   model's transcription for images) right there, with an ad hoc, single-document
+   **Project to JSON** against any schema — batch-projecting several sources at
+   once lives in Projections and Graph instead, scoped to the schema each is for.
 2. **Schemas** — a schema is a JSON Schema object plus the system prompt used to
-   extract it, tagged **literature** (projections build a draft for the graph) or
-   **experiment** (projections assemble into one experiment record). Reachable from
-   both workflows, since the two share the same schema collection. Reuse one before
+   extract it. Every schema is **literature**-kind by default (**experiment**-kind
+   ones belong to the Experiment workflow); exactly one literature schema can be
+   **the graph schema** at a time, chosen in Graph — every other one is a
+   **custom** schema, run and reviewed in Projections. Reachable from both
+   workflows, since they share the same schema collection. Reuse one before
    creating a near-duplicate.
-3. **Projections** — structured extractions, each linked by evidence back to the
-   markdown artifact and the original file. Select one or more **literature**
-   projections from the **same group** and **Build draft**.
-4. **Review** — read the proposed graph, then submit, reject, or approve.
-   Approving asks for an explicit confirmation and is the **only** thing that
-   writes the knowledge graph.
-5. **Graph** — the published graph, drawn as a map: click an entity to read its
-   type and properties beside it, double-click to traverse outward from it. The
-   name filter and the entity list stay beside the map.
+3. **Projections** — custom, domain-specific structured extraction (e.g.
+   materials properties) that never reaches the published graph. Pick a custom
+   schema, select one or more already-converted sources and **Project N
+   selected**; the resulting projections list right below, each opening its
+   validation, evidence and JSON on click.
+4. **Graph** — the one pipeline that is always on: pick which literature schema
+   is **the graph schema**, project sources against it (**Project all pending**,
+   no manual selection needed), select the resulting projections and **Build
+   draft**, then submit, reject or approve that draft — approving asks for an
+   explicit confirmation and is the **only** thing that writes the knowledge
+   graph. The published graph itself is drawn as a map below all of that: click
+   an entity to read its type and properties beside it, double-click to traverse
+   outward from it.
 
 ### Experiment
 
@@ -178,12 +182,12 @@ The card declares a `NodeDeploymentDefinition` (Plugin API 1.21+, see
 Legion can be [published](../../docs/deployment.md) as a locked, password-protected
 application the same way a Conversation or a Text card can. Every business action a
 person uses to drive the pipeline publishes: upload, convert (alone or batched),
-organize sources into groups, search, project, build a draft, assemble or confirm an
-experiment record, and submit, reject or approve a draft — approving is still the
-only thing that writes the graph. The **Settings** section never publishes: the
-collection name, PDF engine and MinerU URL stay engineering-only and the section does
-not even mount in a deployed release, regardless of whether its pane stays visible in
-the published layout.
+organize sources into groups, search, project, choose the graph schema, build a
+draft, assemble or confirm an experiment record, and submit, reject or approve a
+draft — approving is still the only thing that writes the graph. The **Settings**
+section never publishes: the collection name, PDF engine and MinerU URL stay
+engineering-only and the section does not even mount in a deployed release,
+regardless of whether its pane stays visible in the published layout.
 
 A deployment mounts no live model picker (`docs/deployment.md`: "it does not mount
 ... model settings"), so **Project to JSON** and **Assemble experiment record**

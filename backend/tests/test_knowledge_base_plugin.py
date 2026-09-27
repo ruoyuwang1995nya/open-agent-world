@@ -35,10 +35,10 @@ from oaw_knowledge_base.errors import KnowledgeError  # noqa: E402
 from oaw_knowledge_base.operations import BY_NAME, EXTRACT_ACTIONS, OPERATIONS, READ_ACTIONS  # noqa: E402
 
 NODE_TYPE = "knowledge.base"
-# Uploading a file, converting it, managing groups, changing settings and approving a
-# draft are acts a person takes on the canvas. They must never gain a capability kind,
-# on any transport.
-DESKTOP_ONLY = {"ingest", "process", "groups", "settings", "review"}
+# Uploading a file, converting it, managing groups, changing settings, approving a
+# draft and choosing which schema builds the graph are acts a person takes on the
+# canvas. They must never gain a capability kind, on any transport.
+DESKTOP_ONLY = {"ingest", "process", "groups", "settings", "review", "graph_schema"}
 
 
 @pytest.fixture
@@ -242,15 +242,22 @@ def test_the_research_formation_publishes_and_serves_as_a_deployment(data_root):
     runtime_root = data_root.with_name(data_root.name + "-runtime")
     create_deployment(data_root, runtime_root, release_id, password="a-fine-long-password")
     manifest = json.loads((runtime_root / "deployment.json").read_text("utf-8"))
+    # Section names match the card's own WorkspaceSection ids: Sources absorbs
+    # search, markdown and the single-document projection convenience; Graph
+    # absorbs the graph-schema pipeline (project, draft, review, publish) that used
+    # to be split across three separate tabs.
     assert set(manifest["permissions"][keys["knowledge"]]) == {
-        "settings", "sources", "search", "schemas", "markdown", "projections", "experiments",
-        "review", "graph"}
+        "settings", "sources", "schemas", "projections", "experiments", "graph"}
     access = manifest["plugin_access"][keys["knowledge"]]
     # Settings never appears among the granted resource actions, so a business
     # release can never rewrite the collection name, PDF engine or MinerU URL,
     # regardless of whether its pane stays visible in the published layout.
     assert "settings" not in access["resource_actions"]
     assert access["config_fields"] == ["default_model"]
+    # Search, markdown and choosing the graph schema are still real, callable
+    # resource actions — just grouped under the sections above, not section names
+    # of their own.
+    assert {"search", "markdown", "graph_schema"} <= set(access["resource_actions"])
 
     with TestClient(create_app(ConfigSettings.for_data_root(runtime_root)),
                     client=("127.0.0.1", 50000)) as deployed_client:

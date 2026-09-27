@@ -82,6 +82,8 @@ OPERATIONS: tuple[Operation, ...] = (
         description="Read or change this knowledge base's collection name, PDF engine and MinerU base URL."),
     Operation("review", actions.review, actions.Review,
         description="Submit, reject or approve a draft. Approving publishes it as a fact revision and is the only thing that writes the knowledge graph."),
+    Operation("graph_schema", actions.graph_schema, actions.GraphSchema,
+        description="Get or set which literature-kind schema's projections build the published knowledge graph. A person's config choice, not something an agent should redirect."),
 )
 
 BY_NAME: dict[str, Operation] = {operation.name: operation for operation in OPERATIONS}

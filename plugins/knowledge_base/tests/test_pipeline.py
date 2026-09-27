@@ -179,6 +179,30 @@ def test_schemas_default_to_literature_and_can_be_tagged_and_filtered(card):
     assert retagged["kind"] == "literature"
 
 
+def test_graph_schema_is_one_stored_pointer_restricted_to_literature_schemas(card):
+    # Unset until someone chooses one; "get" alone never fails.
+    assert run(card, actions.graph_schema)["schema_id"] == ""
+    assert run(card, actions.overview)["graph_schema_id"] is None
+
+    literature = run(card, actions.schemas, operation="create", name="Process graph",
+                     definition=SCHEMA, system_prompt="x")["schema"]
+    experiment = run(card, actions.schemas, operation="create", name="Synthesis run",
+                     definition=SCHEMA, system_prompt="x", kind="experiment")["schema"]
+
+    with pytest.raises(KnowledgeError):
+        run(card, actions.graph_schema, operation="set", schema_id=experiment["id"])
+
+    set_result = run(card, actions.graph_schema, operation="set", schema_id=literature["id"])
+    assert set_result["schema_id"] == literature["id"]
+    assert run(card, actions.graph_schema)["schema_id"] == literature["id"]
+    assert run(card, actions.overview)["graph_schema_id"] == literature["id"]
+
+    # Setting it again to a blank id clears it.
+    cleared = run(card, actions.graph_schema, operation="set", schema_id="")
+    assert cleared["schema_id"] == ""
+    assert run(card, actions.overview)["graph_schema_id"] is None
+
+
 def test_full_loop_publishes_only_approved_facts(card):
     source_id, _ = ingest_document(card)
     record_id = run(card, actions.sources)["sources"][0]["record_id"]

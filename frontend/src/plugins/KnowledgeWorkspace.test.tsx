@@ -33,13 +33,14 @@ const DOCUMENT = { record_id: "record-1", filename: "sintering.md", engine: "tex
 const DRAFT = { id: "draft-1", status: "DRAFT", revision: 1, created_by: "user:desktop",
   updated_at: "2026-09-23T00:00:00Z" };
 
-const overview = (counts: Record<string, number> = {}) => ({
+const overview = (counts: Record<string, number> = {}, graphSchemaId: string | null = null) => ({
   collection: { id: "collection-1", name: "Knowledge base" },
   settings: { collection_name: "Knowledge base", pdf_engine: "auto", mineru_base_url: "" },
   engines: ["text"],
   counts: { sources: 1, records: 1, schemas: 1, projections: 0, drafts: 1, pending_review: 1,
     facts: 0, entities: 0, relations: 0, ...counts },
   active_jobs: 0,
+  graph_schema_id: graphSchemaId,
 });
 const EMPTY: Record<string, Record<string, unknown>> = {
   sources: { sources: [] }, schemas: { schemas: [] }, projections: { projections: [] },
@@ -246,7 +247,7 @@ it("keeps the graph empty until the person confirms the approval", async () => {
   let inReview = false;
   let published = false;
   const action = open(async (name, args, confirm) => {
-    if (name === "overview") return overview({ entities: published ? 2 : 0 });
+    if (name === "overview") return overview({ entities: published ? 2 : 0 }, "schema-1");
     if (name === "draft" && args.operation === "list") return { drafts: [DRAFT] };
     if (name === "draft" && args.operation === "get") return { draft: { ...DRAFT,
       status: inReview ? "IN_REVIEW" : DRAFT.status,
@@ -267,21 +268,19 @@ it("keeps the graph empty until the person confirms the approval", async () => {
     return undefined;
   });
 
-  fireEvent.click(await screen.findByRole("tab", { name: "Review" }));
+  // The whole project/draft/review/publish pipeline lives in Graph now, gated on
+  // a graph schema being chosen — "schema-1" above is what unlocks it here.
+  fireEvent.click(await screen.findByRole("tab", { name: "Graph" }));
   fireEvent.click(await screen.findByRole("button", { name: /draft-1/ }));
   // Approving requires IN_REVIEW; "Submit for review" is what mkb needs to get there.
   fireEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
   expect(await screen.findByText(/Approval publishes this draft/)).toBeTruthy();
-
-  fireEvent.click(screen.getByRole("tab", { name: "Graph" }));
   expect(screen.getByText("The graph is empty until a draft is approved.")).toBeTruthy();
-  fireEvent.click(screen.getByRole("tab", { name: "Review" }));
 
   fireEvent.click(screen.getByRole("button", { name: "Confirm and publish" }));
   await waitFor(() => expect(action).toHaveBeenCalledWith("review", expect.objectContaining({
     operation: "approve", draft_id: "draft-1", expected_revision: 1 }), true));
-  fireEvent.click(screen.getByRole("tab", { name: "Graph" }));
   expect(await screen.findByRole("button", { name: /Si3N4/ })).toBeTruthy();
 });
 
@@ -311,11 +310,12 @@ it("projects several selected, already-converted sources against one schema in a
     if (name === "schemas") return { schemas: [SCHEMA] };
     return undefined;
   });
-  const region = within(await screen.findByRole("region", { name: "Sources" }));
+  fireEvent.click(await screen.findByRole("tab", { name: "Projections" }));
+  const region = within(await screen.findByRole("region", { name: "Projections" }));
 
+  fireEvent.change(region.getByLabelText("Custom schema"), { target: { value: "schema-1" } });
   fireEvent.click(await region.findByLabelText("Select sintering.md"));
   fireEvent.click(region.getByLabelText("Select other.md"));
-  fireEvent.change(region.getByLabelText("Extraction schema"), { target: { value: "schema-1" } });
   fireEvent.click(region.getByRole("button", { name: "Project 2 selected" }));
 
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
@@ -323,7 +323,7 @@ it("projects several selected, already-converted sources against one schema in a
     JSON.parse(String(init.body)).record_id);
   expect(recordIds.sort()).toEqual(["record-1", "record-2"]);
   expect(action.mock.calls.some(([name]) => name === "save_projection")).toBe(false);
-  expect(await region.findByText("Projected 2 selected source(s)")).toBeTruthy();
+  expect(await region.findByText("Projected 2 source(s)")).toBeTruthy();
 });
 
 it("lets an engineer pick a connected agent's model from the Knowledge card's Settings", async () => {

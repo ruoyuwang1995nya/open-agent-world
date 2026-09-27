@@ -1,14 +1,15 @@
 """The ``Knowledge research`` formation: a Librarian, a Conversation and a base.
 
 The pipeline is something a person drives from the card: upload files and convert
-them, project a schema against a document, build a draft for the graph from
-Projections or assemble an experiment record from several projections, approve a
-draft in Review. The workspace is the tool; the buttons are the interface. The
-card's own frontend switches between the Literature and Experiment workflows and
-their tabs itself, so the whole card is placed as a single pane here — no
-individual section needs its own place in the generic workspace layout to be
-reachable, which is also what lets the card filter which tabs even show up per
-workflow, something the generic multi-card tab bar cannot do on its own.
+them, then either let Graph run its one designated schema end to end — project,
+build a draft, review, publish — or run a custom schema in Projections for
+domain-specific structured data that never touches the graph, or assemble an
+experiment record from several projections. The workspace is the tool; the buttons
+are the interface. The card's own frontend switches between the Literature and
+Experiment workflows and their tabs itself, so the whole card is placed as a single
+pane here — no individual section needs its own place in the generic workspace
+layout to be reachable, which is also what lets the card filter which tabs even
+show up per workflow, something the generic multi-card tab bar cannot do on its own.
 
 The Librarian holds ``knowledge.base.read`` and nothing more. It answers questions
 about what the base contains — searching documents, reading experiment records and
@@ -48,11 +49,12 @@ Your tools:
 The person drives the pipeline from the workspace, not through you. Uploading a
 document, converting it, running a projection, building a draft and approving it are
 all buttons on the card. When someone asks you to do one of those, say plainly which
-tab to use: Sources (in the Literature workflow) to upload, convert and — once a
-source is converted — project it against a schema, Projections to build a draft,
-Experiments (in the Experiment workflow) to assemble one from several projections,
-Review to approve a draft. Do not offer to do it yourself and do not ask to be given
-the power.
+tab to use: Sources (in the Literature workflow) to upload and convert, Graph to
+pick the one schema whose projections build the published graph and to project,
+build a draft from, review and publish against it — start to finish, Projections for
+a custom schema's own structured extraction (never reaches the graph), Experiments
+(in the Experiment workflow) to assemble one from several projections. Do not offer
+to do it yourself and do not ask to be given the power.
 
 When you answer, a question is one of three kinds, and you must say which:
 - A question about what the documents say ("what synthesis temperature did this

@@ -28,7 +28,8 @@ PREFIX = "knowledge.base"
 # chosen ahead of time. Every top-level field a resource action's result may carry,
 # named once so the whole-card surface and each workspace section can share it.
 DEPLOYMENT_FIELDS = {
-    "overview": frozenset({"collection", "groups", "engines", "counts", "active_jobs"}),
+    "overview": frozenset({"collection", "groups", "engines", "counts", "active_jobs",
+                          "graph_schema_id"}),
     "sources": frozenset({"sources", "offset"}),
     "ingest": frozenset({"source", "group_id"}),
     "process": frozenset({"jobs"}),
@@ -50,6 +51,7 @@ DEPLOYMENT_FIELDS = {
     "experiment_update": frozenset({"experiment"}),
     "review": frozenset({"decision", "draft_id", "status", "reasons", "message", "fact", "event",
                          "graph"}),
+    "graph_schema": frozenset({"schema_id"}),
     "graph": frozenset({"entities", "relations", "truncated"}),
     "jobs": frozenset({"jobs", "job", "events"}),
 }
@@ -66,11 +68,14 @@ def _deployment():
     ``settings`` never appears here: the collection name, PDF engine and MinerU URL
     stay engineering-only, matching "it does not mount ... model settings". Every
     other business action a person uses to drive the pipeline — upload, convert,
-    organize into groups, project, draft, review, publish — is exactly what a
-    deployed release is for, so it is granted. The layout can place this card as one
-    whole pane (``surface``) or, as the Knowledge research preset's own layout does,
-    extract each section into its own tab (``sections``); both are covered so either
-    shape of a saved workspace can publish.
+    search, project, choose the graph schema, build a draft, review, publish — is
+    exactly what a deployed release is for, so it is granted. The layout can place
+    this card as one whole pane (``surface``) or extract each section into its own
+    tab (``sections``); both are covered so either shape of a saved workspace can
+    publish. Section names match the card's own frontend's WorkspaceSection ids —
+    Sources holds search and the single-document projection convenience, Graph holds
+    the graph-schema pipeline end to end (project, draft, review, publish) that used
+    to be split across three separate tabs.
     """
     all_actions = tuple(DEPLOYMENT_FIELDS)
     return NodeDeploymentDefinition(
@@ -80,16 +85,18 @@ def _deployment():
             # without failing publication; hide it in the layout editor to keep a
             # release from showing engineering configuration at all.
             "settings": DeploymentSurface(),
-            "sources": _surface("overview", "sources", "ingest", "process", "groups", "jobs"),
-            "search": _surface("search"),
+            "sources": _surface("overview", "sources", "ingest", "process", "groups", "jobs",
+                                "search", "markdown", "projection_prompt", "save_projection",
+                                config_fields={"default_model"}),
             "schemas": _surface("schemas"),
-            "markdown": _surface("markdown", "projection_prompt", config_fields={"default_model"}),
-            "projections": _surface("projections", "save_projection", "draft"),
+            "projections": _surface("projections", "save_projection", "projection_prompt",
+                                    config_fields={"default_model"}),
+            "graph": _surface("graph", "graph_schema", "projections", "save_projection",
+                              "projection_prompt", "draft", "review",
+                              config_fields={"default_model"}),
             "experiments": _surface("projections", "experiments", "experiment_assemble_prompt",
                                     "experiment_save", "experiment_update",
                                     config_fields={"default_model"}),
-            "review": _surface("draft", "review"),
-            "graph": _surface("graph"),
         },
     )
 

@@ -11,7 +11,8 @@ import "./style.css";
 type Settings = { collection_name: string; pdf_engine: string; mineru_base_url: string };
 type Group = { id: string; name: string; source_count: number; created_at: string; is_default: boolean };
 type Overview = { collection: { id: string; name: string }; groups: Group[]; settings: Settings;
-  engines: string[]; counts: Record<string, number>; active_jobs: number };
+  engines: string[]; counts: Record<string, number>; active_jobs: number;
+  graph_schema_id: string | null };
 type Source = { id: string; filename: string; media_type: string; size: number; created_at: string;
   group_id: string | null; group_name: string | null;
   markdown: { artifact_id: string; size: number; engine: string | null } | null;
@@ -53,12 +54,12 @@ type Pending = { args: Record<string, unknown>; reasons: string[] };
  * shared-infrastructure workflow that reuses Schemas from the same collection.
  * Settings only ever appears for the engineering view. */
 type Category = "literature" | "experiment" | "settings";
-type LiteratureTab = "sources" | "schemas" | "projections" | "review" | "graph";
+type LiteratureTab = "sources" | "schemas" | "projections" | "graph";
 type ExperimentTab = "experiments" | "schemas";
 const LITERATURE_TABS: { id: LiteratureTab; label: () => string }[] = [
   { id: "sources", label: () => t("Sources") },
   { id: "schemas", label: () => t("Schemas") }, { id: "projections", label: () => t("Projections") },
-  { id: "review", label: () => t("Review") }, { id: "graph", label: () => t("Graph") },
+  { id: "graph", label: () => t("Graph") },
 ];
 const EXPERIMENT_TABS: { id: ExperimentTab; label: () => string }[] = [
   { id: "experiments", label: () => t("Experiments") }, { id: "schemas", label: () => t("Schemas") },
@@ -144,6 +145,12 @@ export function Workspace({ host, card }: PluginViewProps) {
   const [groupName, setGroupName] = useState("");
   const [groupEditing, setGroupEditing] = useState(false);
   const [selectedSources, setSelectedSources] = useState<string[]>([]);
+  // Which literature schema's projections build the published graph — the one
+  // pipeline Graph owns end to end. Every other literature schema is "custom":
+  // Projections runs it and reviews the result, but it never reaches the graph.
+  const [graphSchemaId, setGraphSchemaId] = useState("");
+  const [customSchemaId, setCustomSchemaId] = useState("");
+  const [customSelectedSources, setCustomSelectedSources] = useState<string[]>([]);
 
   const [selectedSource, setSelectedSource] = useState("");
   const [extracted, setExtracted] = useState<Extracted>();
@@ -229,7 +236,10 @@ export function Workspace({ host, card }: PluginViewProps) {
     if (generation.current !== current) return;
     const [summary, sourceList, schemaList, projectionList, draftList, jobList, experimentList] =
       results.map(result => result.status === "fulfilled" ? result.value : undefined);
-    if (summary) { setOverview(summary as Overview); setSettings((summary as Overview).settings); }
+    if (summary) {
+      setOverview(summary as Overview); setSettings((summary as Overview).settings);
+      setGraphSchemaId((summary as Overview).graph_schema_id ?? "");
+    }
     if (sourceList) setSources((sourceList.sources as Source[]) ?? []);
     if (schemaList) setSchemas((schemaList.schemas as SchemaItem[]) ?? []);
     if (projectionList) setProjections((projectionList.projections as Projection[]) ?? []);
@@ -371,27 +381,36 @@ export function Workspace({ host, card }: PluginViewProps) {
     await refresh();
   });
 
-  // Same call as "Project to JSON" above, just run once per selected, already-
-  // converted source instead of the one currently open — so a batch of sources
-  // never needs opening each one's markdown just to project it.
-  const projectSelected = () => perform(async () => {
-    if (!schemaId) throw new Error(t("Choose an extraction schema first"));
+  // Same call as "Project to JSON" above, just run once per source id given
+  // instead of the one currently open — used by both Projections' custom batch
+  // (deliberately selected sources) and Graph's "project all pending" (every
+  // converted source the graph schema has not already produced a projection for).
+  const projectSources = (targetSchemaId: string, sourceIds: string[], onDone?: () => void) => perform(async () => {
+    if (!targetSchemaId) throw new Error(t("Choose an extraction schema first"));
     if (!selectedModel) throw new Error(deployed
       ? t("This deployment has no default model configured yet")
       : t("Configure a model connection first"));
-    const targets = projectableSources;
+    const targets = sources.filter(item => sourceIds.includes(item.id) && item.record_id);
     if (!targets.length) throw new Error(t("Select at least one converted source first"));
     let invalid = 0;
     for (const source of targets) {
       const result = await request(`knowledge/${card.id}/project`, {
-        schema_id: schemaId, model: selectedModel, record_id: source.record_id }, deployed);
+        schema_id: targetSchemaId, model: selectedModel, record_id: source.record_id }, deployed);
       const projection = result.projection as { validation?: { valid?: boolean } };
       if (projection.validation?.valid === false) invalid++;
     }
     setNotice(invalid
-      ? t("Projected {v0} selected source(s); {v1} do not satisfy the schema", { v0: targets.length, v1: invalid })
-      : t("Projected {v0} selected source(s)", { v0: targets.length }));
-    setSelectedSources([]);
+      ? t("Projected {v0} source(s); {v1} do not satisfy the schema", { v0: targets.length, v1: invalid })
+      : t("Projected {v0} source(s)", { v0: targets.length }));
+    onDone?.();
+    await refresh();
+  });
+
+  // Which literature schema builds the graph is a business choice, not engineering
+  // config, so it stays changeable from a deployed release — unlike Settings.
+  const setGraphSchema = (id: string) => perform(async () => {
+    const result = await call("graph_schema", { operation: "set", schema_id: id || null });
+    setGraphSchemaId((result.schema_id as string) ?? "");
     await refresh();
   });
 
@@ -529,11 +548,20 @@ export function Workspace({ host, card }: PluginViewProps) {
   const groups = overview?.groups ?? [];
   const activeGroupObject = groups.find(item => item.id === activeGroup);
   const pendingSources = sources.filter(item => !item.markdown);
-  // Only a converted source has a record to project; an unconverted one is
-  // silently excluded from the count and from the batch action itself.
-  const projectableSources = sources.filter(item => selectedSources.includes(item.id) && item.record_id);
   const experimentSchemaIds = new Set(schemas.filter(item => item.kind === "experiment").map(item => item.id));
   const experimentProjections = projections.filter(item => experimentSchemaIds.has(item.schema_id));
+  const literatureSchemas = schemas.filter(item => item.kind === "literature");
+  // Every literature schema is a candidate to become the graph schema; whichever
+  // one is not currently chosen is "custom" — Projections runs and reviews it, but
+  // it never reaches the graph. Changing the choice in Graph moves a schema
+  // between these two lists; nothing about the schema itself is retagged.
+  const customSchemas = literatureSchemas.filter(item => item.id !== graphSchemaId);
+  const convertedSources = sources.filter(item => item.markdown && item.record_id);
+  const customProjections = projections.filter(item =>
+    item.schema_id !== graphSchemaId && !experimentSchemaIds.has(item.schema_id));
+  const graphProjections = projections.filter(item => item.schema_id === graphSchemaId);
+  const graphProjectedRecordIds = new Set(graphProjections.map(item => item.record_id));
+  const graphPendingSources = convertedSources.filter(item => !graphProjectedRecordIds.has(item.record_id!));
 
   return <div className="knowledge-app nodrag nowheel" aria-label={t("{v0} knowledge base", { v0: card.name })}>
     <header className="knowledge-toolbar">
@@ -717,36 +745,27 @@ export function Workspace({ host, card }: PluginViewProps) {
             onClick={() => void processPending()}>
             {t("Process all pending ({v0})", { v0: pendingSources.length })}</button>
         </div>
-        {/* Projecting no longer needs a document open first: pick a schema (and,
-            outside a deployment, a model) once and project every selected,
-            already-converted source against it in one go. */}
-        <div className="knowledge-formbar">
-          <label>{t("Extraction schema")}
-            <select value={schemaId} disabled={busy} onChange={event => setSchemaId(event.target.value)}>
-              <option value="">{t("Choose a schema")}</option>
-              {schemas.map(item => <option key={item.id} value={item.id}>{item.name} v{item.version}</option>)}
-            </select>
-          </label>
-          {deployed
-            ? <p className="knowledge-meta">{t("Model: {v0}", { v0: defaultModel || t("none configured") })}</p>
-            : <label>{t("Model")}
-                <select value={selectedModel} disabled={busy || !models.length} onChange={event => setModel(event.target.value)}>
-                  {!models.length && <option value="">{t("No model configured")}</option>}
-                  {models.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
-                </select>
-              </label>}
-          <button type="button" className="knowledge-primary"
-            disabled={busy || !schemaId || !selectedModel || !projectableSources.length}
-            onClick={() => void projectSelected()}>
-            {t("Project {v0} selected", { v0: projectableSources.length })}</button>
-        </div>
 
         {currentSource && <div className="knowledge-detail">
           <h4>{t("Extracted markdown — {v0}", { v0: currentSource.filename })}</h4>
           <div className="knowledge-projectbar">
-            {/* Uses the same schema and model chosen just above, for the batch
-                action — one picker, whether you project one open document or
-                several selected sources at once. */}
+            {/* An ad hoc, single-document projection while reading — any schema,
+                including the graph one. Batch-projecting several sources at once
+                lives in Projections (custom schemas) and Graph (the graph schema). */}
+            <label>{t("Extraction schema")}
+              <select value={schemaId} disabled={busy} onChange={event => setSchemaId(event.target.value)}>
+                <option value="">{t("Choose a schema")}</option>
+                {schemas.map(item => <option key={item.id} value={item.id}>{item.name} v{item.version}</option>)}
+              </select>
+            </label>
+            {deployed
+              ? <p className="knowledge-meta">{t("Model: {v0}", { v0: defaultModel || t("none configured") })}</p>
+              : <label>{t("Model")}
+                  <select value={selectedModel} disabled={busy || !models.length} onChange={event => setModel(event.target.value)}>
+                    {!models.length && <option value="">{t("No model configured")}</option>}
+                    {models.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </select>
+                </label>}
             <button type="button" className="knowledge-primary" disabled={busy || !extracted || !schemaId || !selectedModel}
               onClick={() => void project()}>{busy ? t("Working…") : t("Project to JSON")}</button>
             <button type="button" onClick={() => setSelectedSource("")}>{t("Close")}</button>
@@ -830,15 +849,52 @@ export function Workspace({ host, card }: PluginViewProps) {
         <div className="knowledge-section">
         <h3>{t("Projections")}</h3>
         <Banner error={error} notice={notice} />
-        <p className="knowledge-meta">{t("Structured extractions. A projection is a candidate until a person approves a draft built from it.")}</p>
-        {!projections.length && <p className="knowledge-empty">{t("No projections yet.")}</p>}
+        <p className="knowledge-meta">{t("Custom structured extraction — pull domain-specific data (e.g. materials properties) out of your documents with a schema of your own. A projection here is reviewed right below; it never builds a draft or reaches the published graph — only Graph's own schema does that.")}</p>
+
+        <h4>{t("Project sources")}</h4>
+        {!customSchemas.length
+          ? <p className="knowledge-empty">{t("Create a literature schema in Schemas first (or free one up: Graph is currently using {v0}).", {
+              v0: literatureSchemas.find(item => item.id === graphSchemaId)?.name ?? t("none") })}</p>
+          : <>
+            <div className="knowledge-formbar">
+              <label>{t("Custom schema")}
+                <select value={customSchemaId} disabled={busy} onChange={event => setCustomSchemaId(event.target.value)}>
+                  <option value="">{t("Choose a schema")}</option>
+                  {customSchemas.map(item => <option key={item.id} value={item.id}>{item.name} v{item.version}</option>)}
+                </select>
+              </label>
+              {deployed
+                ? <p className="knowledge-meta">{t("Model: {v0}", { v0: defaultModel || t("none configured") })}</p>
+                : <label>{t("Model")}
+                    <select value={selectedModel} disabled={busy || !models.length} onChange={event => setModel(event.target.value)}>
+                      {!models.length && <option value="">{t("No model configured")}</option>}
+                      {models.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+                    </select>
+                  </label>}
+            </div>
+            {!convertedSources.length ? <p className="knowledge-empty">{t("Convert a source in Sources first.")}</p> : <ul className="knowledge-list">
+              {convertedSources.map(item => <li key={item.id} className="knowledge-checkrow">
+                <label><input type="checkbox" checked={customSelectedSources.includes(item.id)} disabled={busy}
+                  onChange={event => setCustomSelectedSources(event.target.checked
+                    ? [...customSelectedSources, item.id] : customSelectedSources.filter(value => value !== item.id))} />
+                  <span className="knowledge-visually-hidden">{t("Select {v0}", { v0: item.filename })}</span>
+                </label>
+                <span className="knowledge-checkrow-label">
+                  <span>{item.filename}</span>
+                  <small>{!activeGroup && item.group_name ? item.group_name : t("{v0} projections", { v0: item.projections })}</small>
+                </span>
+              </li>)}
+            </ul>}
+            <button type="button" className="knowledge-primary"
+              disabled={busy || !customSchemaId || !selectedModel || !customSelectedSources.length}
+              onClick={() => void projectSources(customSchemaId, customSelectedSources, () => setCustomSelectedSources([]))}>
+              {t("Project {v0} selected", { v0: customSelectedSources.length })}</button>
+          </>}
+
+        <h4>{t("Projections")}</h4>
+        {!customProjections.length && <p className="knowledge-empty">{t("No custom projections yet.")}</p>}
         <ul className="knowledge-list">
-          {projections.map(item => <li key={item.id} className="knowledge-checkrow">
-            <label><input type="checkbox" checked={chosen.includes(item.id)} disabled={busy}
-              onChange={event => setChosen(event.target.checked
-                ? [...chosen, item.id] : chosen.filter(value => value !== item.id))} />
-              <span className="knowledge-visually-hidden">{t("Select projection {v0}", { v0: shortId(item.id) })}</span>
-            </label>
+          {customProjections.map(item => <li key={item.id}>
             <button type="button" aria-pressed={projection?.id === item.id} disabled={busy}
               onClick={() => void openProjection(item.id)}>
               <span>{item.summary || shortId(item.id)}</span>
@@ -846,8 +902,6 @@ export function Workspace({ host, card }: PluginViewProps) {
             </button>
           </li>)}
         </ul>
-        <button type="button" className="knowledge-primary" disabled={busy || !chosen.length}
-          onClick={() => void buildDraft()}>{t("Build draft from {v0} selected", { v0: chosen.length })}</button>
         {projection && <div className="knowledge-detail">
           <h4>{t("Projection {v0}", { v0: shortId(projection.id) })}</h4>
           {projection.validation?.valid === false && <p role="alert" className="knowledge-error">
@@ -922,51 +976,98 @@ export function Workspace({ host, card }: PluginViewProps) {
         </div>
       </WorkspaceSection>}
 
-      {category === "literature" && literatureTab === "review" && <WorkspaceSection id="review" title={t("Review")} className="knowledge-section">
-        <div className="knowledge-section">
-        <h3>{t("Review")}</h3>
-        <Banner error={error} notice={notice} />
-        <p className="knowledge-meta">{t("Approving publishes a fact revision and is the only thing that writes the graph.")}</p>
-        {!drafts.length && <p className="knowledge-empty">{t("No drafts yet. Select projections to build one.")}</p>}
-        <ul className="knowledge-list">
-          {drafts.map(item => <li key={item.id}>
-            <button type="button" aria-pressed={draftDetail?.id === item.id} disabled={busy}
-              onClick={() => void perform(() => loadDraft(item.id))}>
-              <span>{shortId(item.id)}</span><small>{item.status} · {t("revision {v0}", { v0: item.revision })} · {item.created_by}</small>
-            </button>
-          </li>)}
-        </ul>
-        {draftDetail && <div className="knowledge-detail">
-          <h4>{t("Draft {v0}", { v0: shortId(draftDetail.id) })}</h4>
-          <p className="knowledge-meta">{t("{v0} · {v1} entities · {v2} relations · {v3} evidence links", {
-            v0: draftDetail.status, v1: draftDetail.graph.entities?.length ?? 0,
-            v2: draftDetail.graph.relations?.length ?? 0, v3: draftDetail.evidence_ids.length })}</p>
-          <pre>{pretty(draftDetail.graph)}</pre>
-          <label>{t("Review notes")}<textarea value={reviewNotes} rows={2} disabled={busy}
-            onChange={event => setReviewNotes(event.target.value)} /></label>
-          {pending ? <div role="alert" className="knowledge-confirm">
-            <strong>{t("Publish this draft as fact?")}</strong>
-            <p>{pending.reasons.join(" ")}</p>
-            <button type="button" className="knowledge-primary" disabled={busy}
-              onClick={() => void decide("approve", pending)}>{t("Confirm and publish")}</button>
-            <button type="button" disabled={busy} onClick={() => setPending(undefined)}>{t("Cancel")}</button>
-          </div> : <div className="knowledge-formbar">
-            <button type="button" disabled={busy || draftDetail.status !== "DRAFT"}
-              onClick={() => void decide("submit")}>{t("Submit for review")}</button>
-            {/* mkb only allows approve/reject once a draft has moved past DRAFT into IN_REVIEW. */}
-            <button type="button" className="knowledge-primary" disabled={busy || draftDetail.status !== "IN_REVIEW"}
-              onClick={() => void decide("approve")}>{t("Approve")}</button>
-            <button type="button" disabled={busy || draftDetail.status !== "IN_REVIEW"}
-              onClick={() => void decide("reject")}>{t("Reject")}</button>
-          </div>}
-        </div>}
-        </div>
-      </WorkspaceSection>}
-
       {category === "literature" && literatureTab === "graph" && <WorkspaceSection id="graph" title={t("Graph")} className="knowledge-section knowledge-wide">
         <div className="knowledge-section knowledge-wide">
         <h3>{t("Knowledge graph")}</h3>
         <Banner error={error} notice={notice} />
+        <p className="knowledge-meta">{t("The graph is a specific, always-on projection: one literature schema, chosen once below, whose output is projected, reviewed and published right here — end to end.")}</p>
+        <label>{t("Graph schema")}
+          <select value={graphSchemaId} disabled={busy} onChange={event => void setGraphSchema(event.target.value)}>
+            <option value="">{t("Choose a schema")}</option>
+            {literatureSchemas.map(item => <option key={item.id} value={item.id}>{item.name} v{item.version}</option>)}
+          </select>
+        </label>
+
+        {!graphSchemaId
+          ? <p className="knowledge-empty">{t("Choose a schema above to start building the graph from your sources (create one in Schemas first if none fits).")}</p>
+          : <>
+            <h4>{t("Project sources")}</h4>
+            <p className="knowledge-meta">{t("{v0} converted source(s) awaiting projection against the graph schema.", { v0: graphPendingSources.length })}</p>
+            {!deployed && <label>{t("Model")}
+              <select value={selectedModel} disabled={busy || !models.length} onChange={event => setModel(event.target.value)}>
+                {!models.length && <option value="">{t("No model configured")}</option>}
+                {models.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </select>
+            </label>}
+            <button type="button" className="knowledge-primary" disabled={busy || !selectedModel || !graphPendingSources.length}
+              onClick={() => void projectSources(graphSchemaId, graphPendingSources.map(item => item.id))}>
+              {t("Project all pending ({v0})", { v0: graphPendingSources.length })}</button>
+
+            <h4>{t("Projections")}</h4>
+            {!graphProjections.length && <p className="knowledge-empty">{t("No graph-schema projections yet.")}</p>}
+            <ul className="knowledge-list">
+              {graphProjections.map(item => <li key={item.id} className="knowledge-checkrow">
+                <label><input type="checkbox" checked={chosen.includes(item.id)} disabled={busy}
+                  onChange={event => setChosen(event.target.checked
+                    ? [...chosen, item.id] : chosen.filter(value => value !== item.id))} />
+                  <span className="knowledge-visually-hidden">{t("Select projection {v0}", { v0: shortId(item.id) })}</span>
+                </label>
+                <button type="button" aria-pressed={projection?.id === item.id} disabled={busy}
+                  onClick={() => void openProjection(item.id)}>
+                  <span>{item.summary || shortId(item.id)}</span>
+                  <small>{item.valid === false ? t("invalid") : t("valid")}</small>
+                </button>
+              </li>)}
+            </ul>
+            <button type="button" className="knowledge-primary" disabled={busy || !chosen.length}
+              onClick={() => void buildDraft()}>{t("Build draft from {v0} selected", { v0: chosen.length })}</button>
+            {projection && <div className="knowledge-detail">
+              <h4>{t("Projection {v0}", { v0: shortId(projection.id) })}</h4>
+              {projection.validation?.valid === false && <p role="alert" className="knowledge-error">
+                {(projection.validation.errors ?? projection.validation.missing ?? []).join("; ") || t("Does not satisfy the schema")}</p>}
+              <p className="knowledge-meta">{t("Evidence: {v0}", {
+                v0: projection.evidence.map(link => shortId(link.source_id)).join(", ") || "—" })}</p>
+              <pre>{pretty(projection.data)}</pre>
+            </div>}
+
+            <h4>{t("Review")}</h4>
+            <p className="knowledge-meta">{t("Approving publishes a fact revision and is the only thing that writes the graph.")}</p>
+            {!drafts.length && <p className="knowledge-empty">{t("No drafts yet. Select projections above to build one.")}</p>}
+            <ul className="knowledge-list">
+              {drafts.map(item => <li key={item.id}>
+                <button type="button" aria-pressed={draftDetail?.id === item.id} disabled={busy}
+                  onClick={() => void perform(() => loadDraft(item.id))}>
+                  <span>{shortId(item.id)}</span><small>{item.status} · {t("revision {v0}", { v0: item.revision })} · {item.created_by}</small>
+                </button>
+              </li>)}
+            </ul>
+            {draftDetail && <div className="knowledge-detail">
+              <h4>{t("Draft {v0}", { v0: shortId(draftDetail.id) })}</h4>
+              <p className="knowledge-meta">{t("{v0} · {v1} entities · {v2} relations · {v3} evidence links", {
+                v0: draftDetail.status, v1: draftDetail.graph.entities?.length ?? 0,
+                v2: draftDetail.graph.relations?.length ?? 0, v3: draftDetail.evidence_ids.length })}</p>
+              <pre>{pretty(draftDetail.graph)}</pre>
+              <label>{t("Review notes")}<textarea value={reviewNotes} rows={2} disabled={busy}
+                onChange={event => setReviewNotes(event.target.value)} /></label>
+              {pending ? <div role="alert" className="knowledge-confirm">
+                <strong>{t("Publish this draft as fact?")}</strong>
+                <p>{pending.reasons.join(" ")}</p>
+                <button type="button" className="knowledge-primary" disabled={busy}
+                  onClick={() => void decide("approve", pending)}>{t("Confirm and publish")}</button>
+                <button type="button" disabled={busy} onClick={() => setPending(undefined)}>{t("Cancel")}</button>
+              </div> : <div className="knowledge-formbar">
+                <button type="button" disabled={busy || draftDetail.status !== "DRAFT"}
+                  onClick={() => void decide("submit")}>{t("Submit for review")}</button>
+                {/* mkb only allows approve/reject once a draft has moved past DRAFT into IN_REVIEW. */}
+                <button type="button" className="knowledge-primary" disabled={busy || draftDetail.status !== "IN_REVIEW"}
+                  onClick={() => void decide("approve")}>{t("Approve")}</button>
+                <button type="button" disabled={busy || draftDetail.status !== "IN_REVIEW"}
+                  onClick={() => void decide("reject")}>{t("Reject")}</button>
+              </div>}
+            </div>}
+          </>}
+
+        <h4>{t("Published graph")}</h4>
         <div className="knowledge-formbar">
           <label>{t("Filter by name")}<input value={filter} disabled={busy}
             onChange={event => setFilter(event.target.value)} /></label>

@@ -124,6 +124,7 @@ def overview(context, arguments):
         "groups": [_group_json(item, default_group_id) for item in kb.collections.list(limit=500)],
         "settings": settings,
         "engines": available_engines(settings["mineru_base_url"] or None),
+        "graph_schema_id": graph_schema_id_of(context) or None,
         "counts": {
             "sources": len(sources),
             "records": len(kb.records.list(collection_id=scope, limit=500)),
@@ -989,6 +990,39 @@ def review(context, arguments):
 
 
 # ---------------------------------------------------------------- graph
+
+
+def graph_schema_id_of(context):
+    """The one literature schema whose projections build the published graph.
+
+    Stored under its own top-level state key, not inside ``settings``: unlike the
+    collection name, PDF engine or MinerU URL, choosing it is an ordinary business
+    action (like Process or Build draft), so it must stay changeable from a deployed
+    release too, not only from the engineering-only Settings section.
+    """
+    if context.state is None:
+        return ""
+    return context.state.get()["value"].get("graph_schema_id") or ""
+
+
+class GraphSchema(Request):
+    operation: Literal["get", "set"] = "get"
+    schema_id: str | None = None
+
+
+def graph_schema(context, arguments):
+    request = GraphSchema.model_validate(arguments)
+    if context.state is None:
+        raise KnowledgeError("Card state is unavailable")
+    if request.operation == "set":
+        if request.schema_id:
+            kb = open_client(context.node_id, context.storage_path)
+            schema = kb.schemas.require(request.schema_id)
+            if _schema_kind(schema) != "literature":
+                raise KnowledgeError(
+                    "The graph schema must be a literature-kind schema")
+        context.state.update({"graph_schema_id": request.schema_id or ""})
+    return _bounded({"schema_id": graph_schema_id_of(context)})
 
 
 class GraphQuery(Request):
