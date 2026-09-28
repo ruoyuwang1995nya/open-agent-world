@@ -1,4 +1,6 @@
 import { cardStateSession, stateSessionHeaders } from "../state/cardState";
+import { normalizeCardFinish } from '../cards/cardFinish';
+import { fetchWithRetry } from './fetchWithRetry';
 import type { SummoningSnapshot, SummonedInstance } from "../cards/Barracks";
 import type {
   CardConfig,
@@ -135,6 +137,7 @@ export function normalizeCard(input: unknown): WorldCard {
     state_scope: source.state_scope as WorldCard["state_scope"],
     state_scope_override: source.state_scope_override as WorldCard["state_scope_override"],
     id: String(source.id),
+    finish: normalizeCardFinish(source.finish),
     revision: typeof source.revision === "number" ? source.revision : undefined,
     equipment: source.equipment as WorldCard["equipment"] ?? null,
     minister: source.minister as WorldCard["minister"] ?? null,
@@ -237,7 +240,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}${path}`, { ...init, headers });
+    response = await fetchWithRetry(`${API_BASE}${path}`, { ...init, headers });
   } catch (error) {
     throw new ApiError(
       "The world service is not reachable.",
@@ -251,6 +254,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ? undefined
     : contentType.includes("application/json")
       ? await response.json()
+      : response.ok && contentType.includes("application/vnd.oaw.pack")
+      ? await response.blob()
       : await response.text();
 
   if (!response.ok) {
@@ -273,6 +278,15 @@ function unwrap<T>(input: unknown, key: string): T {
 }
 
 export const worldApi = {
+  getDiagnostics(signal?: AbortSignal): Promise<import('../shell/helpChecks').HelpDiagnostics> {
+    return request('/diagnostics', { signal });
+  },
+  inspectContentPack(input: import('../types/packs').CreatorRequest): Promise<import('../types/packs').CreatorInspection> {
+    return request('/packs/creator/inspect', { method: 'POST', headers: { 'X-OAW-Pack-Install': '1' }, body: JSON.stringify(input) });
+  },
+  exportContentPack(input: import('../types/packs').CreatorRequest): Promise<Blob> {
+    return request('/packs/creator/export', { method: 'POST', headers: { 'X-OAW-Pack-Install': '1' }, body: JSON.stringify(input) });
+  },
   getStorePacks(query: string, cursor?: string, signal?: AbortSignal): Promise<import('../types/packs').StorePage> {
     const params = new URLSearchParams({ query, limit: '20' });
     if (cursor) params.set('cursor', cursor);
@@ -467,6 +481,7 @@ export const worldApi = {
     const payload = {
       ...("id" in node ? { id: node.id } : {}),
       type: node.type,
+      finish: node.finish,
       parent_id: node.parent_id,
       equipment: node.equipment,
       minister: node.minister,
@@ -514,6 +529,7 @@ export const worldApi = {
       body: JSON.stringify({
         id: node.id,
         type: node.type,
+        finish: node.finish,
         parent_id: node.parent_id,
       equipment: node.equipment,
         name: node.name,
@@ -822,6 +838,10 @@ export const worldApi = {
 
   getModelConnections(): Promise<import("../state/modelConnections").ModelCatalog> {
     return request("/settings/models");
+  },
+
+  discoverModels(connection: import("../state/modelConnections").ModelConnection, signal?: AbortSignal): Promise<{ models: { id: string; name: string }[]; truncated: boolean }> {
+    return request("/settings/models/discover", { method: "POST", body: JSON.stringify(connection), signal });
   },
 
   saveModelConnections(settings: import("../state/modelConnections").ModelCatalog): Promise<import("../state/modelConnections").ModelCatalog> {

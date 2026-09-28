@@ -50,6 +50,8 @@ The native dialog shows the retained backup path. Backups are never automaticall
 
 ### Native acceptance before publication
 
+The **Desktop native checks** PR workflow compiles the native shell and its tests on Windows x64 and both macOS architectures without signing credentials. Its placeholder resource directory is only for compilation; it does not produce an installable app or validate an upgrade. The **Desktop release** workflow builds the real payload and installers separately.
+
 On Windows x64 and both macOS architectures, test a real installed version upgrading to a newer signed draft/release: check/download, cancel, corrupt-signature rejection, install/relaunch, saved model credentials and workspace, offline check, backup failure/disk full, and pending storage migration. Verify Authenticode on Windows and Gatekeeper/stapling on macOS. CI's signature checks do not replace these tests. macOS local Sandbox support remains a separate limitation.
 
 GitHub Release downloads remain the public distribution channel. Actions artifacts are temporary build/test outputs.
