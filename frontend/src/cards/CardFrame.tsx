@@ -1,3 +1,4 @@
+import { isMissingCard, MissingPlugin } from "./MissingPlugin";
 import { ConnectionDropSurface } from "./ConnectionDropSurface";
 import { t, useLocale } from "../i18n";
 import { MinisterRoleSettings } from './MinisterRoleCard';
@@ -79,6 +80,7 @@ export function CardContent({ card, level }: BodyProps) {
   const catalog = useWorldStore((s) => s.catalog);
   const definition = catalog.node_types.find((t) => t.id === card.type);
   const ministerTab = useMinisterRole(s => s.settingsCardId === card.id);
+  if (isMissingCard(card, catalog)) return <MissingPlugin card={card} />;
   const Body = definition?.traits.includes("ui.agent-barracks.v1") ? BarracksBody : definition?.traits.includes("ui.skill.v1") ? SkillNodeBody : definition?.traits.includes("ui.skill-package.v1") ? SkillToolboxBody : definition?.traits.includes("ui.task-board.v1") ? TaskBoardBody : definition?.traits.includes("core.agent") ? AgentCardBody : BODIES[card.type] ?? GenericCardBody;
   return <>{card.minister && <nav className="agent-window-tabs nodrag nopan" role="tablist" aria-label={t('Agent card')}>
     <button type="button" role="tab" aria-selected={!ministerTab} onClick={() => useMinisterRole.setState({ settingsCardId: undefined })}>{t('Settings')}</button>
@@ -99,7 +101,7 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
   const activity = useNodeActivity(card);
   const generation = useNodeGeneration(card.id);
   const generationPhase = generation?.targetId === card.id ? generation.phase : undefined;
-  const displayStatus = activity.phase === "idle" ? card.status : activity.phase;
+  const displayStatus = card.missing_plugin ? "unavailable" : activity.phase === "idle" ? card.status : activity.phase;
   const catalog = useWorldStore((state) => state.catalog);
   const level = useNodeSurfaceStore((state) => surfaceLevelForNode(card.id, state.surfaceLevels));
   const showPreview = useNodeSurfaceStore((state) => state.showPreview);
@@ -160,6 +162,7 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
       className={`world-card node-surface card-finish-surface world-card--${card.type} is-${visualLevel} ${selected ? "is-selected" : ""} ${card.status === "running" ? "is-running" : ""} ${card.status === "error" ? "is-error" : ""} ${card.ephemeral ? "is-ephemeral" : ""}`}
       style={{ "--card-kind": definition?.color, borderRadius: NODE_SURFACE_RADIUS[visualLevel] } as CSSProperties}
       aria-label={`${label} ${card.name}`}
+      data-missing={isMissingCard(card, catalog) || undefined}
       data-card-id={card.id}
       data-card-revision={card.revision}
       data-card-type={card.type}
@@ -220,7 +223,7 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
         <header className={`card-header node-surface-header node-drag-region ${visualLevel === "inspector" ? "card-finish-surface" : ""}`}>
           <div className="card-kind-icon" aria-hidden="true"><CatalogIcon definition={definition} size={18} /></div>
           <div className="card-title-group">
-            <span className="card-eyebrow">{label}</span>
+            <span className="card-eyebrow">{isMissingCard(card, catalog) ? `MISSING · ${card.type}` : label}</span>
             <CardName key={`${card.id}:${visualLevel}`} card={card} label={label} editable={visualLevel !== "node"} />
           </div>
           <div className="card-status" data-status={displayStatus} title={`${t('Status')}: ${t(statusLabel(displayStatus))}`}>
@@ -260,7 +263,7 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
           <div className="card-footer-actions">
             {!card.ephemeral ? <IconButton icon={Trash2} danger
               onClick={() => { dismissSurface(card.id); void deleteCard(card.id); }} label={t("Remove {v0}", { v0: String(card.name) })}
-              title={t("Remove object (Ctrl+Z to undo)")} /> : null}
+              title={card.missing_plugin ? t("Remove") : t("Remove object (Ctrl+Z to undo)")} /> : null}
             {support.workspace ? (
               <button type="button" className="card-expand-button" aria-label={definition?.traits.includes("library.readable") ? t("打开阅读器") : t("Open workspace")} title={definition?.traits.includes("library.readable") ? t("打开阅读器") : t("Open workspace")} onClick={() => {
                 if (definition?.traits.includes("library.readable")) cardRef.current?.dispatchEvent(new Event("oaw:expand-reader"));
@@ -274,7 +277,7 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
       </>}
       {(visualLevel === "node" || visualLevel === "preview") && <CardFinishLayer finish={card.finish} quality={finishQuality} />}
     </article>
-    {card.minister && <MinisterAgent card={card} nodeHovered={ministerNodeHovered && level === 'node'} />}
+    {card.minister && !isMissingCard(card, catalog) && <MinisterAgent card={card} nodeHovered={ministerNodeHovered && level === 'node'} />}
   </>);
 });
 

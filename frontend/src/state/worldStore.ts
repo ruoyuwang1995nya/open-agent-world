@@ -1152,7 +1152,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
   deleteCards: (ids) => withHistoryTransaction(async () => {
     // Container members may have been created server-side since the last snapshot.
     const selectedIds = new Set(ids);
-    if (get().cards.some(card => selectedIds.has(card.id) && isContainer(card, get().catalog))) {
+    if (get().cards.some(card => selectedIds.has(card.id) && (card.missing_plugin || isContainer(card, get().catalog)))) {
       try {
         const snapshot = await worldApi.getWorld();
         const owned = ownedCardIds(snapshot.nodes, ids);
@@ -1172,7 +1172,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
 
     const snapshots = new Map<string, RestorableCard>();
     try {
-      for (const snapshot of await snapshotCardsForHistory(cards.filter(card => !irreversible.has(card.id)))) snapshots.set(snapshot.id, snapshot);
+      for (const snapshot of await snapshotCardsForHistory(cards.filter(card => !card.missing_plugin && !irreversible.has(card.id)))) snapshots.set(snapshot.id, snapshot);
     } catch (error) {
       get().pushToast({ tone: "error", title: "Cards were not removed", detail: `Could not preserve document data for undo: ${apiErrorMessage(error)}` });
       return;
@@ -1188,7 +1188,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
     const removed = cards;
 
     const removedIds = new Set(removed.map((card) => card.id));
-    const cannotUndo = removed.some(card => irreversible.has(card.id));
+    const cannotUndo = removed.some(card => card.missing_plugin || irreversible.has(card.id)) || attachedBefore.some(edge => edge.missing_plugin);
     const attachedEdges = attachedBefore.filter(
       (edge) => removedIds.has(edge.source) || removedIds.has(edge.target),
     );
@@ -1394,7 +1394,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
       set((state) => ({
         edges: state.edges.filter((edge) => edge.id !== id),
         selectedEdgeId: undefined,
-        undoStack: appendHistory(state.undoStack, {
+        undoStack: edge.missing_plugin ? [] : appendHistory(state.undoStack, {
             id: ++historySequence,
             label: "Remove relationship",
             kind: "edge-deleted",

@@ -137,6 +137,7 @@ export function normalizeCard(input: unknown): WorldCard {
     config.preview_url = resourceContentUrl(String(source.id));
   }
   return {
+    missing_plugin: source.missing_plugin as WorldCard["missing_plugin"],
     state_scope: source.state_scope as WorldCard["state_scope"],
     state_scope_override: source.state_scope_override as WorldCard["state_scope_override"],
     id: String(source.id),
@@ -157,7 +158,7 @@ export function normalizeCard(input: unknown): WorldCard {
     },
     expanded: Boolean(source.expanded),
     status: String(config.status ?? source.status ?? (type === "sandbox" ? "stopped" : type === "agent" ? "idle" : "available")) as CardStatus,
-    config: !(["agent", "conversation", "text", "image", "sandbox"].includes(type)) ? { ...asRecord(source.config) } : config,
+    config: source.missing_plugin || !(["agent", "conversation", "text", "image", "sandbox"].includes(type)) ? { ...asRecord(source.config) } : config,
     created_at: typeof source.created_at === "string" ? source.created_at : undefined,
     updated_at: typeof source.updated_at === "string" ? source.updated_at : undefined,
   };
@@ -166,6 +167,7 @@ export function normalizeCard(input: unknown): WorldCard {
 export function normalizeEdge(input: unknown): WorldEdge {
   const source = asRecord(input);
   return {
+    missing_plugin: source.missing_plugin as WorldEdge["missing_plugin"],
     id: String(source.id),
     revision: typeof source.revision === "number" ? source.revision : undefined,
     source: String(source.source ?? source.source_id),

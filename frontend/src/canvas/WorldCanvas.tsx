@@ -432,7 +432,7 @@ export function WorldCanvas() {
         source: displayEndpoint(edge.source),
         target: displayEndpoint(edge.target),
         type: "semantic",
-        data: { relationship: edge.relationship, direction: edge.direction, sourceCardId: edge.source, targetCardId: edge.target },
+        data: { missing_plugin: edge.missing_plugin, relationship: edge.relationship, direction: edge.direction, sourceCardId: edge.source, targetCardId: edge.target },
         selected: edge.id === selectedEdgeId,
         markerEnd: {
           type: MarkerType.ArrowClosed,

@@ -14,6 +14,17 @@ afterEach(() => {
 });
 
 describe("API normalization boundary", () => {
+  it('retains missing implementation diagnostics and opaque config through snapshots and events', () => {
+    const missing_plugin = { plugin_id: 'removed.pack', reason: 'owner_mismatch' };
+    const card = { id: 'lost', type: 'text', config: { nested: { items: [1, 2] } }, missing_plugin };
+    const edge = { id: 'lost-edge', source: 'agent', target: 'lost', relationship: 'removed.read', missing_plugin };
+    expect(normalizeCard(card).missing_plugin).toEqual(missing_plugin);
+    expect(normalizeCard(card).config).toEqual(card.config);
+    expect(normalizeEdge(edge).missing_plugin).toEqual(missing_plugin);
+    const snapshot = normalizeWorldSnapshot({ nodes: [card], edges: [edge] });
+    expect(snapshot.nodes[0].missing_plugin).toEqual(missing_plugin);
+    expect(snapshot.edges[0].missing_plugin).toEqual(missing_plugin);
+  });
   it("preserves field validation messages inside the correlated error envelope", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
       error: { code: "invalid_request", message: "Request validation failed.", request_id: "validation-id", retryable: false },

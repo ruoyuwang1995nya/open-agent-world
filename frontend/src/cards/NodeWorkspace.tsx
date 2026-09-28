@@ -1,3 +1,4 @@
+import { isMissingCard, MissingPlugin } from "./MissingPlugin";
 import { useWorkspaceAccess } from '../workspace/WorkspaceAccess';
 import { t, useLocale } from "../i18n";
 import { SandboxWorkspace } from "./SandboxWorkspace";
@@ -55,7 +56,7 @@ function WorkspaceTitlebar({ card }: WorkspaceSurfaceProps) {
       </div>
       <div className="workspace-window-actions">
         {!card.ephemeral && <IconButton icon={Trash2} size="sm" quiet danger onClick={() => { void deleteCard(card.id); }}
-          label={t("Remove {v0}", { v0: String(card.name) })} title={t("Remove object (Ctrl+Z to undo)")} />}
+          label={t("Remove {v0}", { v0: String(card.name) })} title={card.missing_plugin ? t("Remove") : t("Remove object (Ctrl+Z to undo)")} />}
         {canCollapse && <IconButton icon={X} size="sm" quiet onClick={() => closeWorkspace(card.id)} label={t("Close workspace")} />}
       </div>
       <CardFinishLayer finish={card.finish} quality="thumbnail" />
@@ -183,7 +184,7 @@ function AgentWorkspace({ card }: { card: WorldCard }) {
 
 export function WorkspaceSurface({ card }: WorkspaceSurfaceProps) {
   useLocale();
-  return <section className="node-workspace-window" role="dialog" aria-modal="false" aria-label={t("{v0} workspace", { v0: String(card.name) })} data-workspace-node-id={card.id}>
+  return <section data-missing={Boolean(card.missing_plugin) || undefined} className="node-workspace-window" role="dialog" aria-modal="false" aria-label={t("{v0} workspace", { v0: String(card.name) })} data-workspace-node-id={card.id}>
     <WorkspaceTitlebar card={card} />
     <WorkspaceContent card={card} />
   </section>;
@@ -196,6 +197,7 @@ export function WorkspaceContent({ card }: WorkspaceSurfaceProps) {
   const { deployed } = useWorkspaceAccess();
   const [agentTab, setAgentTab] = useState("activity");
   const ministerTab = useMinisterRole(s => s.settingsCardId === card.id) && Boolean(card.minister);
+  if (isMissingCard(card, catalog)) return <div className="workspace-content"><MissingPlugin card={card} /></div>;
   return (
       <div className="workspace-content">
       <PluginSurface card={card} slot="workspace" level="workspace">
