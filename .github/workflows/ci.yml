@@ -1,40 +1,59 @@
-name: CI
+name: Pull request checks
 
 on:
   pull_request:
+    branches: [dev, main]
   push:
-    branches: [dev]
+    branches: [dev, main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  PYTHONUTF8: '1'
-  PYTHONDONTWRITEBYTECODE: '1'
+  PYTHONUTF8: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
-  backend-linux:
-    name: Backend (Linux)
+  backend:
+    name: Backend tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@v6
-      - name: Install locked backend and adapter dependencies
-        run: uv sync --project backend --locked --dev --all-extras --python 3.12
-      - name: Install PDF plugin test dependency
-        run: >-
-          uv pip install --python backend/.venv/bin/python --no-deps
-          --only-binary :all: -r .github/requirements-ci.txt
-      - name: Run backend and public SDK tests
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            backend/uv.lock
+            plugins/*/pyproject.toml
+      - name: Sync locked backend dependencies
+        working-directory: backend
+        run: uv sync --locked --all-extras --group dev
+      - name: Install repository plugins
+        working-directory: backend
+        shell: bash
+        run: |
+          mapfile -t plugin_roots < <(
+            find ../plugins -mindepth 2 -maxdepth 2 -name pyproject.toml -printf '%h\n' | sort
+          )
+          if ((${#plugin_roots[@]} == 0)); then
+            echo "No repository plugin packages found" >&2
+            exit 1
+          fi
+          install_args=()
+          for plugin_root in "${plugin_roots[@]}"; do
+            install_args+=(--editable "$plugin_root")
+          done
+          uv pip install --python .venv/bin/python "${install_args[@]}"
+      - name: Run backend and public SDK test suites
         run: backend/.venv/bin/python .github/run-backend-tests.py tests backend/tests --junitxml=.tmp/backend-linux.xml
       - name: Upload backend results
         if: always()
@@ -45,34 +64,38 @@ jobs:
           include-hidden-files: true
           retention-days: 7
 
-  frontend-deployment:
-    name: Frontend and deployment (Linux)
+  frontend:
+    name: Frontend tests and build
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - uses: actions/setup-python@v5
+      - name: Install locked dependencies
+        working-directory: frontend
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Install locked deployment backend
         run: uv sync --project backend --locked --dev --python 3.12
-      - name: Install locked frontend dependencies
-        run: npm --prefix frontend ci --ignore-scripts --no-audit --no-fund
-      - name: Run frontend unit tests
-        run: npm --prefix frontend test
-      - name: Check TypeScript and build production frontend
-        run: npm --prefix frontend run build
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+      - name: Type-check and build frontend
+        working-directory: frontend
+        run: npm run build
       - name: Install deployment browser
         working-directory: frontend
         run: npx --no-install playwright install --with-deps chromium
       - name: Run deployment acceptance against production frontend
-        run: npm --prefix frontend run test:e2e:deployment
+        working-directory: frontend
+        run: npm run test:e2e:deployment
       - name: Upload deployment failure evidence
         if: failure()
         uses: actions/upload-artifact@v4
@@ -90,11 +113,11 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Install locked backend dependencies
         run: uv sync --project backend --locked --dev --python 3.12
       - name: Check startup, access boundaries, deployment, persistence and migration

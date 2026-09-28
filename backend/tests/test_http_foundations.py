@@ -42,7 +42,7 @@ def test_request_id_covers_success_cors_denial_and_errors(client):
 @pytest.mark.parametrize("value", ["", "x" * 129, "line\nforgery", "with spaces", "not/as/path"])
 def test_untrusted_correlation_header_is_replaced(client, value):
     response = client.get("/api/health", headers={"X-Request-ID": value})
-    assert re.fullmatch("[a-f0-9]{32}", response.headers["x-request-id"])
+    assert re.fullmatch("req_[a-f0-9]{32}", response.headers["x-request-id"])
 
 
 def test_generated_ids_are_distinct_and_logged_without_query(client, caplog):
@@ -108,7 +108,7 @@ async def test_duplicate_request_ids_are_replaced_and_streaming_is_untouched():
     await RequestIdMiddleware(app)(scope, receive, send)
     headers = messages[0]["headers"]
     assert headers == [(b"x-request-id", scope["state"]["request_id"].encode())]
-    assert re.fullmatch("[a-f0-9]{32}", scope["state"]["request_id"])
+    assert re.fullmatch("req_[a-f0-9]{32}", scope["state"]["request_id"])
     assert [message["body"] for message in messages[1:]] == [*chunks, b""]
 
 

@@ -30,6 +30,7 @@ from backend.agents import (
     AgentRuntimeError,
     AgentStateError,
 )
+from backend.request_context import REQUEST_ID_HEADER
 from backend.sandbox import (
     SandboxError,
     SandboxNotFoundError,
@@ -108,7 +109,7 @@ def create_app(
             CORSMiddleware,
             allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
             allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
-            expose_headers=["X-Request-ID"],
+            expose_headers=[REQUEST_ID_HEADER],
         )
     if deployment is None:
         application.add_middleware(ControlPlaneMiddleware, token=selected_settings.control_plane_token)

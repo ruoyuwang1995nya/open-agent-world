@@ -1,96 +1,80 @@
 # Enterprise foundations: validation record
 
-Date: 2026-09-26. Base: `dev` at `10b58ea90db3627a619a08b824f791b0ca54759a`.
+Date: 2026-09-28. Integrated base: `dev` at
+`096e53a08fd31aaa3f1d1f7ad6fe1ff81de18836`.
 
-This records local Windows results. The first GitHub Actions run on `2dc0aec`
-passed the Linux frontend/build/deployment job and Windows core smoke job;
-the full Linux backend job was still running at this checkpoint. Required
-branch checks have not been configured. This slice
-does not enable shared-database tenancy, employee login or RBAC enforcement.
+This is the first foundation slice within a single profile. It does not enable
+shared-database tenancy, employee login, RBAC enforcement or multiple workers.
 
-## Results
+## Local Windows validation
 
 | Check | Result |
 | --- | --- |
-| HTTP foundations, request context, idempotency, control plane, deployment, card state, conversation groups, persistence/events | 105 passed, 1 skipped |
-| All backend and public SDK tests | 1,318 passed, 18 failed, 45 skipped |
-| Frontend Vitest | 734 passed, 0 failed |
+| Complete backend and public SDK selection (`tests backend/tests`) | 1,410 passed, 0 failed, 45 skipped |
+| Frontend Vitest | 810 passed, 0 failed |
+| Retained dev tutorial fixtures after removing duplicate PR edits | 19 passed |
 | Frontend TypeScript and production build | Passed |
-| Playwright deployment acceptance | 1 passed |
-| Documentation tests, strict build and generated-site check | 6 tests passed; 60 pages and 5,754 local links/assets checked |
+| Playwright deployment acceptance against the production build | 1 passed; runner exited successfully |
+| Documentation tests, strict build and generated-site check | 6 tests passed; 61 pages and local links/assets checked |
+| Workflow YAML parsing and `git diff --check` | Passed |
 
-The focused backend skip is the existing opt-in native deployment-clone test
-(`OAW_DEPLOY_NATIVE` was not enabled). Other full-suite skips retain their
-existing platform, optional-dependency or opt-in conditions; they were not
-removed to obtain a green result.
+Tests ran from an isolated checkout with the existing project Python 3.12
+virtual environment and matching frontend dependencies. Pytest temporary files
+were contained in that checkout. The browser acceptance used independent
+Playwright and Edge with its own mock deployment; it did not use an embedded
+browser or a real external model. The initial sandboxed browser run completed
+the test but needed assistance terminating its server. A fresh run outside
+that process restriction passed and exited normally.
 
-Local backend validation used Python 3.12.3 from an existing project virtual
-environment with provider adapters installed. PyMuPDF 1.26.7 was installed in
-an isolated task dependency directory. The original checkout and its virtual
-environment were not modified. Frontend dependencies came from `npm ci` in
-the task clone. The deployment runner's `OAW_TEST_PYTHON` override selected
-that existing Python environment. Clean locked installs also succeeded on
-all three CI runners in the first run; local results and remote results remain
-separate evidence.
+The 45 skips retain existing platform, optional-runtime and native/third-party
+acceptance prerequisites. No blanket skip or permissive success status was
+introduced. Local Windows results do not establish native Sandbox or Linux
+acceptance. Exact-commit remote results are listed in the
+[PR checks](https://github.com/theAfish/open-agent-world/pull/30/checks).
+The workflow also runs Windows core smoke and Linux deployment acceptance;
+adding it does not configure required branch protection.
 
-All 18 backend failures were independently reproduced against an unchanged
-worktree at the base commit. No additional backend failures were observed in
-this local comparison. This is evidence of a pre-existing failing baseline,
-not evidence that the failures are harmless or that Linux will behave identically.
+## Integration and baseline reconciliation
 
-## Backend baseline backlog
+The original September 26 report had 18 local backend failures and the old
+Linux CI run had 16. Those records describe the old branch, not this merged
+revision. Current dev already repaired queue/delivery/stream fixtures, preset
+contracts and cancellation cleanup. This branch retains those repairs.
 
-| Area | Count | Observed failure on both revisions | Next investigation |
-| --- | ---: | --- | --- |
-| `tests/test_agent_runtime.py` | 2 | Old default-model expectation and fake provider model configuration disagree with current defaults | Align fixtures with the supported default-model contract and verify provider translation |
-| `tests/test_sandbox_workspace.py` | 1 | Cancellation leaves a different sandbox lifecycle state than expected | Verify process-tree termination and final state before changing assertions |
-| `backend/tests/test_context_compaction.py` | 1 | Run collection is empty immediately after enqueue | Await the actual queue transition and confirm compaction across tool events |
-| `backend/tests/test_conversations.py` | 4 | One status expectation differs; three delivery assertions observe claimed deliveries | Verify admission and terminal delivery transitions; distinguish timing from lost cleanup |
-| `backend/tests/test_matcreator_workspace.py` | 1 | Preset source pack is no longer opened by the fixture | Update fixture to the current explicit pack/deck contract |
-| `backend/tests/test_preset_library.py` | 4 | Old template payloads fail current validation | Repair representative fixtures while retaining migration and availability assertions |
-| `backend/tests/test_run_cleanup.py` | 3 | Run collection is empty immediately after enqueue | Exercise asynchronous admission, then verify provider context cleanup |
-| `backend/tests/test_skill_runtime.py` | 1 | Cancellation returns while runtime state differs from expected | Confirm teardown completion and revocation ordering |
-| `backend/tests/test_streaming_messages.py` | 1 | Timeline has two messages where the test expects three | Verify stream identity and delivery ordering |
-| Total | 18 | | |
+The expanded CI selection additionally runs root-level public SDK tests, which
+the existing dev backend job did not collect. The remaining stale assertions
+there are repaired without changing production behavior:
 
-Prioritize cancellation, delivery and stream cleanup because they can affect
-runtime correctness. Then reconcile model, preset and asynchronous admission
-fixtures with the intended contracts. Keep assertions about persisted data,
-permission revocation and cleanup; do not replace them with unconditional
-waits, blanket skips or permissive status lists. Re-run the complete backend
-suite and both CI operating systems before requiring the new checks on `dev`.
+- The default agent model is the configured `oaw:default` reference. The fake
+  ADK translation test supplies its own explicit model instead of relying on a
+  configured user default.
+- Cancelling one command drains that execution's process tree and leaves the
+  shared Sandbox ready. The test now checks its job closure, finished receipt
+  and empty execution registry, then checks workspace permission revocation at
+  the explicit Sandbox stop boundary.
 
-## Frontend baseline repairs included
+The request-context integration preserves the existing actor enum, local
+principal/scope and binding APIs. Only authentication establishes an identity;
+HTTP/WebSocket correlation never assigns local authority to a remote request.
+Both the original API/context tests and the new ingress, isolation and replay
+coverage are retained. Existing frontend GET retries and product fixtures are
+preserved, while failed mutations remain unretried.
 
-The original base independently had eight failing frontend tests. This change
-repairs their fixtures: the activity-stream file lacked its DOM environment;
-the tutorial cancellation test lacked the library-loading phase and resources;
-Legions tests still assumed the removed automatic-deck UI. The replacement
-fixtures exercise the current library/deck flow and preserve cancellation,
-availability, drag, and deletion checks. Product UI behavior was not changed
-to accommodate those tests.
-
-The deployment browser test also replaced a removed participant-summary label
-with the visible participant row and mention control. It still checks login,
-conversation sessions, tasks, plugin notes/downloads, persistence after reload,
-mobile layout, logout, and hidden engineering routes.
-
-The documentation build also exposed missing navigation entries for the two
-new enterprise pages and two existing performance reports. All four pages are
-now included in navigation; strict missing-page validation remains enabled.
+CI extends the existing workflow and check names, reuses repository plugin
+installation, and adds deployment and Windows checks. The parallel workflow
+and PDF dependency pin from the old PR are removed.
 
 ## Remaining acceptance boundaries
 
-- Idempotency covers conversation session creation only. A response loss and
-  replay, conflicting payload, revocation, rollback, database reopen and
-  competing SQLite connections are covered. External side effects and event
-  publication still need an outbox.
-- Tenant context is fixed compatibility metadata within one profile database.
-  Scoped repositories, tenant columns/constraints and cross-tenant isolation
-  tests are future work.
-- Deployment sessions remain ephemeral shared-password sessions. Their actor
-  changes after login or restart; they are not durable employee identities.
-- HTTP correlation and readiness probes do not provide distributed tracing,
-  a production metrics backend or high availability.
-- This branch should remain a draft until the backend baseline is repaired
-  and the new CI workflow has been evaluated on GitHub.
+- Idempotency covers conversation session creation only, when the caller
+  supplies a stable key. Lost responses, conflicting payloads, live revocation,
+  rollback, database reopen and competing SQLite connections are covered.
+- Events still publish after commit on a best-effort basis. External effects
+  and durable notification delivery require an outbox.
+- Tenant scope is compatibility metadata in one profile database. Scoped
+  repositories, tenant constraints and cross-tenant isolation are future work.
+- Shared-password deployment sessions are ephemeral and are not durable
+  employee identities; reauthentication can change the idempotency actor.
+- Correlation and health probes do not provide distributed tracing, a metrics
+  backend or high availability. Native isolation and real external services
+  require their separate acceptance suites.

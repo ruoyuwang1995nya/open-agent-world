@@ -37,13 +37,26 @@ describe("API normalization boundary", () => {
     expect(headers.get("X-Request-ID")).toMatch(/^[a-f0-9]{32}$/);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ title: "Review", participant_ids: [] });
   });
-  it("retains the sent request ID when a response is lost", async () => {
+  it("retains the sent request ID without retrying when a mutation response is lost", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new TypeError("connection lost"));
     vi.stubGlobal("fetch", fetchMock);
-    const error = await worldApi.getConversation("chat").catch(error => error);
+    const error = await worldApi.createConversationSession("chat", { title: "Chat", participant_ids: [] }, "create-once").catch(error => error);
     expect(error).toMatchObject({ status: 0, retryable: false });
     expect(error.requestId).toBe(fetchMock.mock.calls[0][1].headers.get("X-Request-ID"));
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it('loads and restores the same finish, defaulting old cards to normal', async () => {
+    const card = normalizeCard({ id: 'printed', type: 'text', finish: 'starlight' });
+    expect(card.finish).toBe('starlight');
+    expect(normalizeCard({ id: 'old', type: 'text' }).finish).toBe('normal');
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify(card), {
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await worldApi.restoreNode(card)).finish).toBe('starlight');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).finish).toBe('starlight');
+    await worldApi.createNode(card);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).finish).toBe('starlight');
   });
   it('preserves the persisted unsigned 32-bit terrain seed without accepting malformed values', () => {
     for (const seed of [0, 123, 456, 0xFFFFFFFF]) {

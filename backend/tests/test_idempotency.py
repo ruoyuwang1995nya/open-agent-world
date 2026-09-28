@@ -19,7 +19,7 @@ from backend.request_context import ActorRef, RequestContext, TenantScope
 from backend.tests.conftest import create_node
 
 
-CONTEXT = RequestContext("request-1", ActorRef("local_host", "host"), TenantScope("org", "workspace", "world"), "local")
+CONTEXT = RequestContext("request-1", ActorRef("user", "host"), TenantScope("org", "workspace", "world"), "local")
 
 
 def authorize() -> None:

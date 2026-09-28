@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import FrozenInstanceError, asdict
 
 import httpx
@@ -13,15 +14,129 @@ from backend.api.dependencies import get_request_context, get_services
 from backend.control_plane import ControlPlaneMiddleware
 from backend.deployment_runtime import COOKIE, password_record, runtime_router
 from backend.errors import PermissionDeniedError
+from backend.http_context import RequestIdMiddleware
 from backend.request_context import (
-    ActorRef,
-    LOCAL_TENANT_SCOPE,
-    RequestContext,
-    context_from_scope,
-    current_request_context,
-    request_context_scope,
-    require_request_context,
+    ActorKind, ActorRef, LOCAL_ACTOR, LOCAL_TENANT, RequestContext,
+    bind_request_context, context_from_scope, create_local_request_context,
+    current_request_context, require_request_context,
 )
+
+_GENERATED_REQUEST_ID = re.compile(r"req_[0-9a-f]{32}\Z")
+
+
+def test_local_context_has_stable_personal_identity_and_scope():
+    context = create_local_request_context("desktop-request-1")
+
+    assert context.request_id == "desktop-request-1"
+    assert context.actor.kind is ActorKind.USER
+    assert context.actor.id == "local-user"
+    assert context.tenant.organization_id == "local-organization"
+    assert context.tenant.workspace_id == "local-workspace"
+    assert context.tenant.world_id == "local-world"
+    assert context.auth_method == "local"
+
+
+def test_binding_is_nested_and_restored():
+    outer = create_local_request_context("outer")
+    inner = create_local_request_context("inner")
+
+    assert current_request_context() is None
+    with bind_request_context(outer):
+        assert require_request_context() is outer
+        with bind_request_context(inner):
+            assert require_request_context() is inner
+        assert require_request_context() is outer
+    assert current_request_context() is None
+    with pytest.raises(PermissionDeniedError, match="trusted request context"):
+        require_request_context()
+
+
+@pytest.mark.asyncio
+async def test_context_is_isolated_between_async_tasks():
+    first = create_local_request_context("first")
+    second = create_local_request_context("second")
+
+    async def capture(context):
+        with bind_request_context(context):
+            await asyncio.sleep(0)
+            return require_request_context()
+
+    observed = await asyncio.gather(capture(first), capture(second))
+
+    assert observed == [first, second]
+    assert current_request_context() is None
+
+
+def context_app() -> FastAPI:
+    app = FastAPI()
+    app.add_middleware(ControlPlaneMiddleware)
+    app.add_middleware(RequestIdMiddleware)
+
+    @app.get("/context")
+    async def context_endpoint(request: Request):
+        context = get_request_context(request)
+        assert require_request_context() is context
+        return {
+            "request_id": context.request_id,
+            "actor_id": context.actor.id,
+            "organization_id": context.tenant.organization_id,
+        }
+
+    @app.websocket("/context")
+    async def websocket_context(websocket: WebSocket):
+        await websocket.accept()
+        context = websocket.state.request_context
+        assert require_request_context() is context
+        await websocket.send_json({"request_id": context.request_id})
+        await websocket.close()
+
+    return app
+
+
+def test_http_middleware_propagates_valid_request_id_and_context():
+    with TestClient(context_app()) as client:
+        response = client.get("/context", headers={"X-Request-ID": "desktop.request:42"})
+
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] == "desktop.request:42"
+    assert response.json() == {
+        "request_id": "desktop.request:42",
+        "actor_id": "local-user",
+        "organization_id": "local-organization",
+    }
+
+
+@pytest.mark.parametrize("value", ["contains spaces", "contains/slash", "x" * 129])
+def test_http_middleware_replaces_unsafe_request_id(value):
+    with TestClient(context_app()) as client:
+        response = client.get("/context", headers={"X-Request-ID": value})
+
+    generated = response.headers["X-Request-ID"]
+    assert _GENERATED_REQUEST_ID.fullmatch(generated)
+    assert response.json()["request_id"] == generated
+
+
+def test_websocket_receives_the_same_request_context():
+    with TestClient(context_app()) as client:
+        with client.websocket_connect(
+            "/context",
+            headers={"X-Request-ID": "websocket-request-1"},
+        ) as websocket:
+            assert websocket.receive_json() == {"request_id": "websocket-request-1"}
+
+
+def test_main_application_registers_and_exposes_request_id(client):
+    response = client.get(
+        "/api/catalog",
+        headers={
+            "Origin": "http://localhost:5173",
+            "X-Request-ID": "catalog-request-1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] == "catalog-request-1"
+    assert "X-Request-ID" in response.headers["Access-Control-Expose-Headers"]
 
 
 def management_app(token=None):
@@ -47,17 +162,17 @@ def management_app(token=None):
 
 
 def test_context_is_immutable_and_scopes_reset_after_errors():
-    first = RequestContext("first", ActorRef("system", "worker"), LOCAL_TENANT_SCOPE, "internal")
-    second = RequestContext("second", ActorRef("system", "worker-2"), LOCAL_TENANT_SCOPE, "internal")
+    first = RequestContext("first", ActorRef("system", "worker"), LOCAL_TENANT, "internal")
+    second = RequestContext("second", ActorRef("system", "worker-2"), LOCAL_TENANT, "internal")
     assert current_request_context() is None
     with pytest.raises(PermissionDeniedError):
         require_request_context()
     with pytest.raises(FrozenInstanceError):
         first.actor.id = "forged"
-    with request_context_scope(first):
+    with bind_request_context(first):
         assert require_request_context() is first
         with pytest.raises(RuntimeError):
-            with request_context_scope(second):
+            with bind_request_context(second):
                 assert require_request_context() is second
                 raise RuntimeError("operation failed")
         assert require_request_context() is first
@@ -71,8 +186,8 @@ def test_management_identity_comes_from_authentication_not_headers():
               "X-OAW-State-Session": "other-session"}
     with TestClient(app) as local:
         result = local.get("/probe", headers=forged).json()
-        assert result["actor"] == {"kind": "local_host", "id": "local-host"}
-        assert result["tenant"] == asdict(LOCAL_TENANT_SCOPE)
+        assert result["actor"] == asdict(LOCAL_ACTOR)
+        assert result["tenant"] == asdict(LOCAL_TENANT)
         assert result["auth_method"] == "local_socket"
         assert result["request_id"]
         with local.websocket_connect("/probe") as socket:
@@ -88,7 +203,7 @@ def test_management_identity_comes_from_authentication_not_headers():
                 pytest.fail("untrusted WebSocket accepted")
         headers = {**forged, "Authorization": "Bearer " + secret}
         allowed = remote.get("/probe", headers=headers)
-        assert allowed.json()["actor"] == {"kind": "host_credential", "id": "control-plane"}
+        assert allowed.json()["actor"] == asdict(ActorRef("host_credential", "control-plane"))
         assert allowed.json()["auth_method"] == "host_bearer"
         assert secret not in allowed.text
         with remote.websocket_connect("/probe", headers=headers) as socket:
@@ -169,7 +284,7 @@ def test_deployment_context_distinguishes_public_and_password_sessions(monkeypat
         context = first.json()["context"]
         assert context["actor"]["kind"] == "deployment_session"
         assert len(context["actor"]["id"]) == 64
-        assert context["tenant"] == asdict(LOCAL_TENANT_SCOPE)
+        assert context["tenant"] == asdict(LOCAL_TENANT)
         assert context["auth_method"] == "deployment_cookie"
         assert token not in first.text
         assert client.get("/api/runtime-app").json()["context"]["actor"] == context["actor"]

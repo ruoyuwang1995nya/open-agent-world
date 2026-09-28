@@ -1,49 +1,41 @@
 # Pull request checks
 
-`ci.yml` runs on every pull request, every push to `dev`, and manual dispatch.
-It does not use path filters or `continue-on-error`. Repository administrators
-should require these three checks in the `dev` branch ruleset after their first run:
+`ci.yml` extends the existing workflow on PRs targeting `dev` or `main`, pushes
+to those branches, and manual dispatch. Check names already used by branch
+rules remain stable; there are no path filters, blanket skips, or
+`continue-on-error` bypasses.
 
-- `Backend (Linux)`: all tests in `tests` and `backend/tests`, including migration,
-  recovery, authorization, and run lifecycle regressions.
-- `Frontend and deployment (Linux)`: Vitest, TypeScript plus Vite production build,
-  and the existing deployment Playwright scenario against that build.
-- `Core smoke (Windows)`: startup, control-plane access, deployed application,
-  request context/correlation/health, durable idempotency, SQLite persistence/migration,
-  storage relocation, and acceptance-helper contracts.
+- `Backend tests`: all tests in `tests` and `backend/tests`, including public
+  SDK contracts, migrations, recovery, authorization, and run lifecycle tests.
+- `Frontend tests and build`: Vitest, TypeScript, Vite production build, and
+  the deployment Playwright scenario against that build.
+- `Core smoke (Windows)`: startup, authentication, deployment, request
+  context/correlation/health, idempotency, persistence, migration and storage.
 
 Python 3.12 and Node 24 match the desktop release toolchain. `uv sync --locked`
-rejects backend lock drift, and `npm ci` rejects frontend manifest/lock drift.
-The full backend job installs both optional adapters because existing tests import
-Google ADK and LiteLLM directly; no external model credentials are needed.
+and `npm ci` reject manifest/lock drift. The full backend job retains the
+existing installation of all repository plugin packages, which own their
+extra dependencies, and installs both optional provider adapters. It needs
+no external model credentials. `run-backend-tests.py` makes plugin sources
+available during collection, including when using an existing local Python
+environment instead of editable plugin installations.
 
-The backend lock currently excludes plugin-specific test dependencies. The full
-suite therefore explicitly installs the pinned PDF dependency from
-`requirements-ci.txt`, with dependency resolution disabled so it cannot change
-the locked backend environment. Move this pin into a shared locked development
-group when plugin dependency ownership is consolidated. Tests run with the
-environment's Python directly so a later `uv run` sync cannot remove the extra
-dependency. `run-backend-tests.py` exposes declared local plugin sources before
-pytest collection, using the same source layout as the application loader.
-
-To reproduce the Linux backend job from the repository root:
+Run the full backend suite from the repository root after installing the
+locked backend environment and the repository plugins:
 
 ```sh
-uv sync --project backend --locked --dev --all-extras --python 3.12
-uv pip install --python backend/.venv/bin/python --no-deps --only-binary :all: -r .github/requirements-ci.txt
 backend/.venv/bin/python .github/run-backend-tests.py tests backend/tests
 ```
 
-On Windows, use `backend/.venv/Scripts/python.exe` in place of the Unix Python path.
-Frontend and deployment reproduction uses the commands already in `ci.yml`;
-Playwright installs Chromium and the deployment config starts its own isolated
-mock runtime with `frontend/dist`.
-For an existing local Python environment, set `OAW_TEST_PYTHON` to its executable;
-the deployment browser configuration otherwise uses `backend/.venv`.
+On Windows use `backend/.venv/Scripts/python.exe`. The frontend commands are
+`npm --prefix frontend test`, `npm --prefix frontend run build`, and
+`npm --prefix frontend run test:e2e:deployment` after installing Playwright's
+browser. The deployment configuration starts its own isolated mock runtime
+and uses `frontend/dist`; `OAW_TEST_PYTHON` can select an existing interpreter.
 
-Backend JUnit reports are retained for seven days, as are browser traces and
-screenshots after deployment failures. Existing native sandbox and external XRD
-science tests retain their explicit prerequisite skips. A passing CI run is not
-evidence that privileged OS isolation, a private network, or an external science
-runtime has been accepted; those require the documented runtime-specific suites.
-The workflow supplies check results but does not itself enable branch protection.
+Backend JUnit reports and failed browser traces/screenshots are retained for
+seven days. Existing platform, native isolation and external science tests
+retain their documented prerequisite skips. These checks do not establish
+native Sandbox acceptance, real model/network acceptance or multi-user
+enterprise readiness. The workflow does not configure branch protection;
+repository administrators can require its checks in the branch ruleset.

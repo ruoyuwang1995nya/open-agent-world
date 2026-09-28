@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.api.dependencies import get_services
-from backend.request_context import ActorRef, establish_request_context, request_context_scope
+from backend.request_context import ActorKind, ActorRef, establish_request_context, bind_request_context
 
 COOKIE = "oaw_operator"
 
@@ -32,9 +32,9 @@ def runtime_router(manifest: dict, *, secure_cookie: bool = False):
             raise HTTPException(403, "Cross-origin changes are not allowed")
 
     async def public(request: Request):
-        context = establish_request_context(request.scope, ActorRef("anonymous", "deployment-public"),
+        context = establish_request_context(request.scope, ActorRef(ActorKind.ANONYMOUS, "deployment-public"),
                                             auth_method="deployment_public")
-        with request_context_scope(context):
+        with bind_request_context(context):
             yield context
 
     async def operator(request: Request):
@@ -47,9 +47,9 @@ def runtime_router(manifest: dict, *, secure_cookie: bool = False):
         # The shared deployment password identifies a session, not a human user.
         # Never carry the bearer cookie itself into logs, traces, or persistence.
         session_id = hashlib.sha256(b"oaw-deployment-session\x00" + token.encode("utf-8")).hexdigest()
-        context = establish_request_context(request.scope, ActorRef("deployment_session", session_id),
+        context = establish_request_context(request.scope, ActorRef(ActorKind.DEPLOYMENT_SESSION, session_id),
                                             auth_method="deployment_cookie")
-        with request_context_scope(context):
+        with bind_request_context(context):
             yield context
 
     @router.get("/api/deployment", dependencies=[Depends(public)])

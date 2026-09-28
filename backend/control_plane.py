@@ -16,7 +16,7 @@ from uuid import uuid4
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from backend.request_context import ActorRef, establish_request_context, request_context_scope
+from backend.request_context import ActorKind, ActorRef, LOCAL_ACTOR, establish_request_context, bind_request_context
 
 
 def is_loopback_peer(host: str) -> bool:
@@ -57,10 +57,10 @@ class ControlPlaneMiddleware:
         if local or authenticated:
             context = establish_request_context(
                 scope,
-                ActorRef("host_credential", "control-plane") if authenticated else ActorRef("local_host", "local-host"),
+                ActorRef(ActorKind.HOST_CREDENTIAL, "control-plane") if authenticated else LOCAL_ACTOR,
                 auth_method="host_bearer" if authenticated else "local_socket",
             )
-            with request_context_scope(context):
+            with bind_request_context(context):
                 await self.app(scope, receive, send)
             return
 

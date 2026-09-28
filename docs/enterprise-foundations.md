@@ -1,6 +1,6 @@
 # Enterprise foundations: implementation sequence
 
-Baseline: `dev` at `10b58ea` (2026-09-26). This change is the first foundation
+Integrated with `dev` at `096e53a` (2026-09-28). This change is the first foundation
 slice, not an enterprise deployment release. The current database still owns
 one world per profile; shared-database multi-tenancy is not enabled.
 
@@ -10,14 +10,14 @@ one world per profile; shared-database multi-tenancy is not enabled.
   bearer token. Forwarding headers do not confer local trust.
 - `backend/deployment_runtime.py` checks an in-memory shared-password session,
   release surfaces and allowed nodes. A session is not a named employee.
-- `backend/api/dependencies.py` previously carried only a card-state session.
+- `backend/api/dependencies.py` carries the trusted context alongside its existing card-state session.
 - `backend/services.py` constructs SQLite stores and orchestrates mutations.
   The stores generally do not accept tenant or human authorization context.
 - `backend/persistence/database.py` uses a connection-level `RLock`, SQLite
   transactions and additive startup migrations. An `RLock` is not an asyncio
   task lock. Never keep these synchronous transactions open across `await`.
 - `/api/health` already exists as a compatibility liveness endpoint.
-- Existing backend, frontend and deployment tests had no independent PR CI.
+- Existing PR CI from #25 covers backend and frontend checks; this slice extends it with public SDK tests, deployment E2E and Windows smoke.
 - Run `caller_id` identifies an execution trigger (such as a conversation),
   and card-state owner/session identifies state placement. Neither is a tenant
   or a human principal; they must not be repurposed as one.
@@ -26,16 +26,20 @@ one world per profile; shared-database multi-tenancy is not enabled.
 
 ### Trusted request metadata
 
-`ActorRef(kind, id)`, `TenantScope(organization_id, workspace_id, world_id)` and
+`ActorRef(kind, id, display_name)`, `TenantScope(organization_id, workspace_id, world_id)` and
 `RequestContext(request_id, actor, tenant, auth_method)` are immutable values.
-`LOCAL_TENANT_SCOPE` is a compatibility scope within a single profile database.
+`LOCAL_TENANT` is a compatibility scope within a single profile database.
 It is not a globally unique organization identity or a database isolation layer.
 
-Only successful server authentication establishes the context:
+The existing `ActorKind`, local principal/scope, `create_local_request_context`
+and `bind_request_context` APIs are retained. HTTP/WebSocket correlation uses
+one middleware; it never creates an identity. The earlier middleware that
+assigned the local principal to every request is replaced. Only successful
+server authentication (or an explicitly public route) establishes the context:
 
 | Entry | Actor | Meaning |
 | --- | --- | --- |
-| Literal local peer | `local_host` | Existing trusted desktop host |
+| Literal local peer | `user` / `local-user` | Existing trusted desktop principal from #24 |
 | Valid host bearer | `host_credential` | Host integration credential |
 | Valid deployment cookie | `deployment_session` | Pseudonymous shared-password session |
 | Explicit public deployment metadata/login route | `anonymous` | Public visitor, no operator authority |
@@ -53,8 +57,9 @@ old request context does not preserve authorization after membership revocation.
 ### Correlation, errors and health
 
 - Every HTTP response receives `X-Request-ID`; a single incoming ID containing
-  1–128 ASCII letters, digits, dots, underscores or hyphens is accepted. Missing,
-  duplicate or invalid IDs are replaced. This field conveys no authority.
+  1-128 ASCII letters, digits, dots, underscores, colons or hyphens, starting
+  with a letter or digit, is accepted. Missing,
+  duplicate or invalid IDs are replaced with a `req_`-prefixed random ID. This field conveys no authority.
 - Framework/domain error envelopes include `request_id` and `retryable`.
   Existing `detail` and sandbox feedback fields remain available. Validation
   errors omit raw inputs; unexpected failures return a generic message.
@@ -107,19 +112,19 @@ policy must specify when key reuse is allowed and how replayed data is removed.
 
 The PR workflow checks the locked backend and frontend dependency installations,
 backend tests, frontend type/build and Vitest checks, deployment E2E, and Windows
-backend smoke coverage. Plugin-only test dependencies are separately pinned in
-the CI requirements file. Checks must pass; no `continue-on-error` bypass is used.
+backend smoke coverage. It retains the existing `Backend tests` and `Frontend
+tests and build` check names and the installation of repository plugins for
+their declared dependencies. Checks must pass; no `continue-on-error` bypass is used.
 Repository administrators still need to configure these checks as required on
 `dev`; adding a workflow does not alter GitHub branch protection.
-The local validation results and pre-existing backend failures are recorded in
-[the validation report](enterprise-foundations-validation.md). The new workflow
-does not make the existing backend suite green by itself.
+The current checks and the baseline reconciliation are recorded in
+[the validation report](enterprise-foundations-validation.md). Local focused
+checks and complete remote jobs remain distinct evidence.
 
 ## Next changes, in dependency order
 
 | Priority / change | Concrete work | Acceptance gate |
 | --- | --- | --- |
-| P0: restore the backend baseline | Resolve the 18 reproduced failures, separating stale fixtures from runtime cancellation/delivery defects; run the new Linux and Windows jobs before making checks required | Full backend suite passes without blanket skips, weakened assertions or `continue-on-error` |
 | P0: durable identity and provenance | Bootstrap per-profile organization/workspace/world and local principal, add a versioned migration ledger and backup/restore procedure; add initiating actor/request columns to messages, runs and resource history without changing existing trigger IDs | Old profile migration preserves resource IDs, messages and run semantics; restart preserves identity |
 | P0: tenant-owned repositories | Introduce explicit `TenantScope` on repository boundaries, backfill business tables, add composite keys/FKs, cover attachments/state/secrets/settings/deployment copies | Knowing another tenant's UUID returns the same 404 as absence; cross-world edges/session/artifact links fail in the database |
 | P0: AuthorizationService | Apply the contract below at use-case boundaries; require scoped repository lookups before policy evaluation | HTTP, Agent tools and background calls cannot bypass checks; desktop compatibility has explicit local policy |

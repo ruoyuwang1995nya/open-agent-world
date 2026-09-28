@@ -3,21 +3,21 @@
 from __future__ import annotations
 
 import logging
-import re
 import time
-from uuid import uuid4
 
 from fastapi import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 
+from backend.request_context import REQUEST_ID_HEADER, resolve_request_id
+
+
 logger = logging.getLogger(__name__)
-_REQUEST_ID = re.compile(rb"[A-Za-z0-9._-]{1,128}")
 
 
 def request_id(scope: Scope) -> str:
-    return scope.setdefault("state", {}).setdefault("request_id", uuid4().hex)
+    return scope.setdefault("state", {}).setdefault("request_id", resolve_request_id(None))
 
 
 def error_response(
@@ -32,7 +32,7 @@ def error_response(
             "code": code, "message": message,
             "request_id": correlation, "retryable": retryable,
         }},
-        headers={**(headers or {}), "X-Request-ID": correlation},
+        headers={**(headers or {}), REQUEST_ID_HEADER: correlation},
     )
 
 
@@ -48,11 +48,8 @@ class RequestIdMiddleware:
             return
         values = [value for name, value in scope.get("headers", [])
                   if name.lower() == b"x-request-id"]
-        correlation = (
-            values[0].decode("ascii")
-            if len(values) == 1 and _REQUEST_ID.fullmatch(values[0])
-            else uuid4().hex
-        )
+        supplied = values[0].decode("latin-1") if len(values) == 1 else None
+        correlation = resolve_request_id(supplied)
         scope.setdefault("state", {})["request_id"] = correlation
         started = time.monotonic()
         status = 500
