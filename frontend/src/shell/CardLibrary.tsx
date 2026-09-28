@@ -11,7 +11,7 @@ import { collectedLibraryCards, collectedLibraryLegions, compareLibraryCards, di
 import { LibraryPack } from "./LibraryPack";
 import { PackInstaller } from "./PackInstaller";
 import { InstalledPackDetails } from "./InstalledPackDetails";
-import { installedPackStatus, packInventory } from "./installedPacks";
+import { installedPackStatus, packInventory, packIssue } from "./installedPacks";
 import { usePackInstallations } from "../state/packInstallations";
 import type { PackInstallations } from "../types/packs";
 import { PackStore } from "./PackStore";
@@ -175,8 +175,8 @@ export function CardLibrary() {
             <label className="library-search"><Search size={15} /><input aria-label={t("Search packs")} placeholder={t("Search packs")} value={query} onChange={event => setQuery(event.target.value)} /></label></div>
           <div className="pack-grid">{inventory.filter(({ pack }) => `${pack.definition.name} ${pack.definition.description} ${t(pack.definition.name)} ${t(pack.definition.description)} ${pack.definition.plugin_id}`.toLowerCase().includes(query.toLowerCase())).map(({ pack, versions, registered }) =>
             <LibraryPack key={pack.definition.id} pack={pack} snapshot={snapshot} onOpened={setReveal} onBrowse={browsePack}
-              onInspect={versions.length && (pack.opened || !snapshot.available_pack_ids.includes(pack.definition.id)) ? () => setInspectedPack(pack.definition.id) : undefined}
-              status={versions.length ? installedPackStatus(versions) : undefined} contentCountKnown={registered} />
+              onInspect={versions.length && (pack.opened || packIssue(pack, snapshot, versions) || !snapshot.available_pack_ids.includes(pack.definition.id)) ? () => setInspectedPack(pack.definition.id) : undefined}
+              versions={versions} status={versions.length ? installedPackStatus(versions) : undefined} contentCountKnown={registered} />
           )}</div>
           {reveal && snapshot.packs[reveal] ? <span className="library-announcement" role="status">{t(snapshot.packs[reveal].definition.name)} {t("opened. Click its empty wrapper to view cards.")}</span> : null}
           </>}
