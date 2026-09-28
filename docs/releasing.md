@@ -40,7 +40,9 @@ Certificate acquisition and account verification happen outside this repository.
 
 Without credentials, preview/manual builds keep the existing unsigned Windows and ad-hoc macOS behavior. The native menu explains that automatic updates are unavailable and offers the official releases page. `createUpdaterArtifacts` and the public key are injected only into configured release builds. Private keys are never written to app configuration or payloads.
 
-All three build jobs upload signed updater artifacts (`.exe` for Windows; `.app.tar.gz` for macOS). The release job assembles `latest.json` only when every platform and version agrees. Publish that manifest and its matching artifacts together. The fixed endpoint uses GitHub's latest stable release; prereleases are installed manually and do not advance this channel. Keep the same signing key across releases. Older builds without the updater need a one-time manual upgrade.
+Updater signing keys are separate from the Windows/Apple publisher certificates. The updater keypair can be generated locally, but its private key needs secure long-term retention before enabling the stable update channel. A test key is not a production signing identity.
+
+When updater keys are configured, all three build jobs upload signed updater artifacts (`.exe` for Windows; `.app.tar.gz` for macOS). The release job assembles `latest.json` only when every platform and version agrees, each payload and signature file is present, and the manifest signatures and URLs match those assets. Publish that manifest and its matching artifacts together. The fixed endpoint uses GitHub's latest stable release; prereleases are installed manually and do not advance this channel. Keep the same signing key across releases. Older builds without the updater need a one-time manual upgrade.
 
 ### Update backup and recovery
 
@@ -48,9 +50,22 @@ After the user confirms installation, OAW hides its workspace, requests a clean 
 
 The native dialog shows the retained backup path. Backups are never automatically deleted. To restore, quit all OAW processes, retain the current failed data directory for investigation, and restore the backup **at its original source path** recorded in `.oaw-update-backup.json`; do not merge two versions' files. Use the matching earlier app installer if reverting a data migration. Keep backups private because they include credential storage.
 
+### Code review and preview validation
+
+The **Desktop native checks** PR workflow runs Rust formatting and native tests on Windows x64 and both macOS architectures without signing credentials. Its placeholder resource directory does not produce an installable app or validate an upgrade. Backend tests cover backup rejection and recovery, disabled/signed configuration transitions, and incomplete or inconsistent update assets.
+
+Run **Desktop release** manually on the PR branch to validate the real payload and installers. This does not create or publish a GitHub Release. Payload self-tests exercise the installed backup command and restore synthetic documents, a database and encrypted model credentials, including Windows DPAPI. macOS also runs this test from the bundled `.app` resource layout. These checks do not exercise native update dialogs or replace installing the app on a clean machine.
+
+The updater can be reviewed and merged while disabled by default. Ready for review means the code and preview build checks are complete; it does not mean the stable update channel is ready to enable. Keep the publication requirements below explicit rather than treating unavailable production credentials as a code-review prerequisite.
+
 ### Native acceptance before publication
 
-The **Desktop native checks** PR workflow compiles the native shell and its tests on Windows x64 and both macOS architectures without signing credentials. Its placeholder resource directory is only for compilation; it does not produce an installable app or validate an upgrade. The **Desktop release** workflow builds the real payload and installers separately.
+Before a signed public release:
+
+- Configure and securely retain the updater keypair, Windows signing certificate, and Apple Developer ID/notarization credentials listed above.
+- Deploy and smoke-test the official Marketplace, then bind its origin in `backend/official_marketplace.py`. `scripts/check-marketplace-release.py` enforces this for tags; manual preview builds remain available without it.
+- Build real signed installers, verify platform signatures/notarization, and complete the installed-app acceptance below.
+- Verify the stable manifest and asset URLs against the release assets before publishing them together.
 
 On Windows x64 and both macOS architectures, test a real installed version upgrading to a newer signed draft/release: check/download, cancel, corrupt-signature rejection, install/relaunch, saved model credentials and workspace, offline check, backup failure/disk full, and pending storage migration. Verify Authenticode on Windows and Gatekeeper/stapling on macOS. CI's signature checks do not replace these tests. macOS local Sandbox support remains a separate limitation.
 

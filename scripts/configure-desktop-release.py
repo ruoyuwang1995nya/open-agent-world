@@ -19,6 +19,11 @@ def configure(root: Path, env=os.environ):
             'endpoints': ['https://github.com/theAfish/open-agent-world/releases/latest/download/latest.json'],
             'windows': {'installMode': 'passive'},
         }
+    else:
+        # Reusing a configured checkout must not produce preview artifacts with
+        # a stale update channel or require an old private key.
+        config['bundle'].pop('createUpdaterArtifacts', None)
+        config.get('plugins', {}).pop('updater', None)
     if env.get('RUNNER_OS') == 'Windows':
         thumbprint = env.get('OAW_WINDOWS_CERTIFICATE_THUMBPRINT')
         if strict and not thumbprint:
@@ -26,15 +31,17 @@ def configure(root: Path, env=os.environ):
         if thumbprint:
             config['bundle']['windows'].update(certificateThumbprint=thumbprint, digestAlgorithm='sha256',
                 timestampUrl=env.get('OAW_WINDOWS_TIMESTAMP_URL') or 'http://timestamp.digicert.com')
+        else:
+            for key in ('certificateThumbprint', 'digestAlgorithm', 'timestampUrl'):
+                config['bundle']['windows'].pop(key, None)
     if env.get('RUNNER_OS') == 'macOS':
         identity = env.get('APPLE_SIGNING_IDENTITY')
         if strict and not all(env.get(key) for key in ['APPLE_CERTIFICATE', 'APPLE_SIGNING_IDENTITY', 'APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID']):
             raise SystemExit('Signed releases require Developer ID signing and Apple notarization credentials.')
-        if identity:
-            mac_path = root / 'desktop/src-tauri/tauri.macos.conf.json'
-            mac = json.loads(mac_path.read_text())
-            mac['bundle']['macOS']['signingIdentity'] = identity
-            mac_path.write_text(json.dumps(mac, indent=2) + '\n')
+        mac_path = root / 'desktop/src-tauri/tauri.macos.conf.json'
+        mac = json.loads(mac_path.read_text())
+        mac['bundle']['macOS']['signingIdentity'] = identity or '-'
+        mac_path.write_text(json.dumps(mac, indent=2) + '\n')
     config_path.write_text(json.dumps(config, indent=2) + '\n')
     if env.get('GITHUB_ENV'):
         with open(env['GITHUB_ENV'], 'a') as stream:

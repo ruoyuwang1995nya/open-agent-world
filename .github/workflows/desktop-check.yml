@@ -2,7 +2,7 @@ name: Desktop native checks
 
 on:
   pull_request:
-    paths: ['desktop/**', 'backend/desktop_backup.py', 'scripts/*desktop*', '.github/workflows/desktop-*.yml']
+    paths: ['desktop/**', 'backend/desktop_backup.py', 'backend/tests/test_desktop_*.py', 'scripts/*desktop*', '.github/workflows/desktop-*.yml']
   workflow_dispatch:
 
 permissions:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   check:
-    name: Native compile (${{ matrix.platform }})
+    name: Native tests (${{ matrix.platform }})
     strategy:
       fail-fast: false
       matrix:
@@ -46,6 +46,6 @@ jobs:
       - name: Check Rust formatting
         working-directory: desktop/src-tauri
         run: cargo fmt --all -- --check
-      - name: Compile native shell and tests
+      - name: Test native shell
         working-directory: desktop/src-tauri
-        run: cargo check --locked --all-targets
+        run: cargo test --locked --all-targets
