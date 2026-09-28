@@ -1,4 +1,6 @@
 import { tutorialAllowsCanvasTarget } from '../onboarding/interactionGuard';
+import { useSmoothWheelZoom, MIN_CANVAS_ZOOM, MAX_CANVAS_ZOOM } from './useSmoothWheelZoom';
+import { CanvasControls } from './CanvasControls';
 import { t, useLocale } from "../i18n";
 import { ResizeLayer } from "./ResizeLayer";
 import { GlueLayer } from "./GlueLayer";
@@ -12,7 +14,6 @@ import { stableNode, stableNodeList } from './stableNodes';
 import { cardIndex } from '../state/cardIndex';
 import {
   ConnectionMode,
-  Controls,
   MarkerType,
   ReactFlow,
   useNodesState,
@@ -461,10 +462,15 @@ export function WorldCanvas() {
     setViewportState({ ...next, ...size });
   }, [dimensions, setViewportState]);
 
+  const wheelWriting = useSmoothWheelZoom(wrapper, isScrollableArea, next => {
+    commitViewport(next);
+    reportInteraction({ type: 'viewport', ...next });
+  });
   const onMoveEnd: OnMove = useCallback((event, next) => {
+    if (wheelWriting.current) return;
     commitViewport(next);
     if (event || document.activeElement?.closest('.world-controls')) reportInteraction({ type: 'viewport', ...next });
-  }, [commitViewport]);
+  }, [commitViewport, wheelWriting]);
   const onInit: OnInit<CanvasNode, CanvasEdge> = useCallback((instance) => {
     commitViewport(instance.getViewport());
   }, [commitViewport]);
@@ -961,8 +967,8 @@ export function WorldCanvas() {
           selectEdge(undefined);
           selectCards([]);
         }}
-        minZoom={0.12}
-        maxZoom={2.2}
+        minZoom={MIN_CANVAS_ZOOM}
+        maxZoom={MAX_CANVAS_ZOOM}
         defaultViewport={{ x: viewport.x, y: viewport.y, zoom: viewport.zoom }}
         panOnScroll={false}
         selectionOnDrag={false}
@@ -987,12 +993,7 @@ export function WorldCanvas() {
         <WorldBackground />
         <LocalMiniMap />
         <MapAtlas active={pinToolActive} onActiveChange={active => { setPinToolActive(active); if (active) setGlueActive(false); }} glueActive={glueActive} onGlueChange={active => { setGlueActive(active); if (active) setPinToolActive(false); }} />
-        <Controls
-          className="world-controls"
-          position="bottom-right"
-          showInteractive={false}
-          aria-label={t("Canvas zoom controls")}
-        />
+        <CanvasControls />
       </ReactFlow>
       <EdgeInspector />
     </div>

@@ -51,7 +51,7 @@ test('pan across uncached terrain and zoom without losing terrain coverage', asy
   await expect.poll(checkCoverage).toBe(true);
   await page.mouse.move(700, 400);
   for (let step = 0; step < 4; step++) await page.locator('.world-controls .react-flow__controls-zoomin').click();
-  await expect.poll(async () => Number(await page.locator('.contour-chunk').first().getAttribute('data-resolution'))).toBe(80);
+  await expect.poll(() => page.locator('.contour-chunk').evaluateAll(chunks => chunks.every(el => el.getAttribute('data-resolution') === '56'))).toBe(true);
   await expect.poll(checkCoverage).toBe(true);
   await page.screenshot({ path: '../.outputs/viewport-performance.png' });
 });

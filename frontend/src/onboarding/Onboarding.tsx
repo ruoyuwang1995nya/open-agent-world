@@ -1,4 +1,5 @@
 import { t, useLocale } from "../i18n";
+import { useMotionPresence } from '../shell/useMotionPresence';
 import { createPortal } from 'react-dom';
 import { getNodesBounds, getViewportForBounds, useReactFlow } from '@xyflow/react';
 import { ArrowRight, ArrowUp, BookOpen, FilePlus2, Layers3, ChevronDown, Compass, Pause, RotateCcw, X } from 'lucide-react';
@@ -96,7 +97,8 @@ export function Onboarding() {
   const arrowId = useId();
   const flightLayer = useRef<HTMLDivElement>(null);
   const focusSequence = useRef(0);
-  const welcome = s.view === 'welcome';
+  const welcomePresence = useMotionPresence(s.view === 'welcome', 360);
+  const welcome = welcomePresence.present;
   const active = s.view === 'active';
   const step = STEPS.find(item => item.id === s.session?.step) ?? STEPS[0];
   const reviewing = s.session?.completedDemo === step.id;
@@ -519,7 +521,7 @@ export function Onboarding() {
     return () => { cancelAnimationFrame(frame); highlighted.forEach(element => element.removeAttribute('data-tutorial-highlight')); };
   }, [welcome, libraryOpen, workspaceHost, s.view, target, step.id, step.participants, targetElement, flow, connectionGeometry, cards.length]);
 
-  if (s.view === 'hidden') return <QuickStartGuide />;
+  if (s.view === 'hidden' && !welcome) return <QuickStartGuide />;
   const motion: GuideMotion = welcome || s.view === 'paused' ? 'idle' : s.busy ? 'think' : step.id === 'enter' ? 'enter' : step.expects ? 'indicate' : 'speak';
   const role = step.role;
   const settingsStep = step.target.startsWith('model-');
@@ -533,7 +535,7 @@ export function Onboarding() {
     : needsModelsTab ? 'Click Models here.'
     : needsConnection ? 'Add or select a connection first.' : reviewing ? step.result!.dialogue : step.dialogue;
   const missing = role && step.expects !== 'place' && step.expects !== 'delete' && !cards.some(card => card.id === s.session?.refs[role]);
-  return createPortal(<div hidden={welcome && libraryOpen} className={`onboarding-layer ${welcome ? 'is-welcome' : 'is-tutorial'} ${welcome && choosingWorkspace ? 'is-choosing-workspace' : ''} ${settingsStep ? 'is-settings-guide' : ''} ${libraryOpen && !welcome ? 'is-library-guide' : ''} ${step.participants ? 'is-interaction-guide' : ''}`}>
+  return createPortal(<div hidden={welcome && libraryOpen} aria-hidden={welcomePresence.closing || undefined} {...(welcomePresence.closing ? { inert: '' } : {})} className={`onboarding-layer ${welcome ? 'is-welcome' : 'is-tutorial'} ${welcomePresence.closing ? 'is-leaving' : ''} ${welcome && choosingWorkspace ? 'is-choosing-workspace' : ''} ${settingsStep ? 'is-settings-guide' : ''} ${libraryOpen && !welcome ? 'is-library-guide' : ''} ${step.participants ? 'is-interaction-guide' : ''}`}>
     <Spotlight ref={spotlight} />
     <div ref={placementArrow} className="tutorial-placement-arrow" aria-hidden="true" style={{ display: 'none' }}>
       <svg viewBox="0 0 52 72"><path d="M 18 4 H 34 V 40 H 47 L 26 65 L 5 40 H 18 Z" /></svg>

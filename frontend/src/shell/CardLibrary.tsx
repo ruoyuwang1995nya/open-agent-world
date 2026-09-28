@@ -1,4 +1,5 @@
 import { CardFace, CardStock } from "../components/CardFace";
+import { useMotionPresence } from './useMotionPresence';
 import { finishLabel } from "../cards/cardFinish";
 import { t, useLocale } from "../i18n";
 import { useEffect, useRef, useState } from "react";
@@ -27,6 +28,7 @@ const same = (a: DeckEntry, b: DeckEntry) => a.kind === b.kind && a.id === b.id;
 export function CardLibrary() {
   useLocale();
   const library = useCardLibrary();
+  const presence = useMotionPresence(library.open);
   const legions = useWorldStore(state => state.legions);
   const deleteLegion = useWorldStore(state => state.deleteLegion);
   const modal = useRef<HTMLDialogElement>(null);
@@ -152,8 +154,8 @@ export function CardLibrary() {
     </PhysicalLibraryCard>;
   };
 
-  return <><div className="library-backdrop" hidden={!library.open} onClick={library.close} aria-hidden="true" />
-    <dialog ref={modal} open={library.open} className="card-library-modal" aria-labelledby="card-library-title">
+  return <><div className="library-backdrop" hidden={!presence.present} data-motion={presence.closing ? 'closing' : 'open'} onClick={library.close} aria-hidden="true" />
+    <dialog ref={modal} open={presence.present} data-motion={presence.closing ? 'closing' : 'open'} aria-hidden={!library.open} {...(!library.open ? { inert: '' } : {})} className="card-library-modal" aria-labelledby="card-library-title">
     <header className="library-header"><div className="dialog-icon"><LibraryBig size={22} /></div><div><span>{t("Your collection")}</span><h2 id="card-library-title">{t("Pack & Card Library")}</h2></div>
       <button className="top-icon-button" aria-label={t("Close Library")} onClick={library.close}><X size={18} /></button></header>
     <div className="library-tab-row"><nav className="library-tabs" aria-label={t("Library sections")}>{([

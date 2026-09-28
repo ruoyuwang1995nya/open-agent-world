@@ -5,7 +5,7 @@ import {
   parseChunkKey,
   sampleTerrainChunk,
   terrainHeightAt,
-  terrainResolutionForZoom,
+  TERRAIN_RESOLUTION,
 } from "./terrain";
 
 describe("procedural contour terrain", () => {
@@ -42,31 +42,10 @@ describe("procedural contour terrain", () => {
     expect(terrainHeightAt(0, 2 * CHUNK_SIZE)).toBeCloseTo(left.values[resolution], 6);
   });
 
-  it("uses stable LOD tiers and caches identical chunk geometry", () => {
-    expect(terrainResolutionForZoom(0.12)).toBe(32);
-    expect(terrainResolutionForZoom(0.8)).toBe(56);
-    expect(terrainResolutionForZoom(1.5)).toBe(80);
-    const chunk = getTerrainChunk(0, 0, 32);
-    expect(chunk).toBe(getTerrainChunk(0, 0, 32));
+  it("caches the canonical medium-detail chunk geometry", () => {
+    const chunk = getTerrainChunk(0, 0, TERRAIN_RESOLUTION);
+    expect(chunk).toBe(getTerrainChunk(0, 0, TERRAIN_RESOLUTION));
     expect(`${chunk.minorPath}${chunk.majorPath}`).toContain("Q");
-  });
-
-  it('keeps LOD inside the hysteresis bands and handles jumps across both tiers', () => {
-    expect(terrainResolutionForZoom(0.46, 32)).toBe(32);
-    expect(terrainResolutionForZoom(0.44, 56)).toBe(56);
-    expect(terrainResolutionForZoom(0.48, 32)).toBe(56);
-    expect(terrainResolutionForZoom(0.41, 56)).toBe(32);
-    expect(terrainResolutionForZoom(1.18, 56)).toBe(56);
-    expect(terrainResolutionForZoom(1.12, 80)).toBe(80);
-    expect(terrainResolutionForZoom(1.2, 56)).toBe(80);
-    expect(terrainResolutionForZoom(1.09, 80)).toBe(56);
-    expect(terrainResolutionForZoom(2, 32)).toBe(80);
-    expect(terrainResolutionForZoom(0.2, 80)).toBe(32);
-    for (const start of [32, 56]) {
-      let resolution = start;
-      for (const zoom of [0.44, 0.46, 0.45, 0.44, 0.46]) resolution = terrainResolutionForZoom(zoom, resolution);
-      expect(resolution).toBe(start);
-    }
   });
 
   it("parses signed chunk keys without accepting malformed values", () => {
@@ -75,7 +54,7 @@ describe("procedural contour terrain", () => {
     expect(parseChunkKey("bad:key")).toBeUndefined();
   });
 
-  it("closes elevation fills at chunk boundaries at every LOD", () => {
+  it("closes elevation fills at chunk boundaries across sampling resolutions", () => {
     for (const resolution of [32, 56, 80]) {
       for (const [x, y] of [[-1, -1], [0, -1], [-1, 0], [0, 0]]) {
         const chunk = getTerrainChunk(x, y, resolution);

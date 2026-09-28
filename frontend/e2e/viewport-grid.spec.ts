@@ -1,6 +1,11 @@
 import { expect, test } from '@playwright/test';
 
-test('composited grid preserves dot phase, size and viewport coverage', async ({ page }) => {
+test('composited grid preserves dot phase, size and viewport coverage', async ({ page, request }) => {
+  const profile = await (await request.get('/api/application')).json();
+  await request.patch('/api/application/preferences', { data: {
+    profile_id: profile.profile_id, generation: profile.generation,
+    changes: { 'oaw-onboarding-v1': JSON.stringify({ version: 1, state: { status: 'skipped' } }) },
+  } });
   await page.goto('/');
   const grid = page.locator('#oaw-world-map > .world-grid');
   await expect(grid).toBeVisible();
@@ -9,23 +14,27 @@ test('composited grid preserves dot phase, size and viewport coverage', async ({
       const root = el.parentElement!;
       const viewport = root.querySelector('.react-flow__viewport')!;
       const transform = new DOMMatrix(getComputedStyle(viewport).transform);
-      const translated = new DOMMatrix(getComputedStyle(el).transform);
-      const pattern = el.querySelector('pattern')!;
-      const gap = Number(pattern.getAttribute('width'));
-      const bounds = el.getBoundingClientRect(), canvas = root.getBoundingClientRect();
-      return { gap, zoom: transform.a, x: translated.e, y: translated.f,
+      const tile = [...el.querySelectorAll<SVGSVGElement>('svg')].find(tile => tile.style.opacity === '1')!;
+      const translated = new DOMMatrix(getComputedStyle(tile).transform);
+      const pattern = tile.querySelector('pattern')!;
+      const gap = Number(pattern.getAttribute('width')) * translated.a;
+      const bounds = tile.getBoundingClientRect(), canvas = root.getBoundingClientRect();
+      const pad = -parseFloat(tile.style.left);
+      return { gap, zoom: transform.a, scale: translated.a, x: translated.e - pad * (1 - translated.a), y: translated.f - pad * (1 - translated.a),
         expectedX: transform.e % gap, expectedY: transform.f % gap,
-        radius: el.querySelector('circle')!.getAttribute('r'),
+        radius: Number(tile.querySelector('circle')!.getAttribute('r')) * translated.a,
         covers: bounds.left <= canvas.left && bounds.top <= canvas.top && bounds.right >= canvas.right && bounds.bottom >= canvas.bottom,
       };
     });
     expect(state.covers).toBe(true);
-    expect(state.radius).toBe('1');
+    expect(state.radius).toBeCloseTo(1, 3);
     expect(state.x).toBeCloseTo(state.expectedX, 3);
     expect(state.y).toBeCloseTo(state.expectedY, 3);
-    expect(state.gap).toBeCloseTo(24 * state.zoom * 2 ** Math.max(0, Math.ceil(Math.log2(18 / (24 * state.zoom)))), 3);
+    expect(state.gap).toBeGreaterThanOrEqual(16);
+    expect(state.gap).toBeLessThanOrEqual(Math.max(40, 24 * state.zoom));
+    expect(Math.log2(state.gap / (24 * state.zoom))).toBeCloseTo(Math.round(Math.log2(state.gap / (24 * state.zoom))), 3);
   };
-  await check();
+  await expect(check).toPass();
   for (const end of [{ x: 320, y: 230 }, { x: 1140, y: 560 }]) {
     await page.mouse.move(800, 400);
     await page.mouse.down();
@@ -35,8 +44,7 @@ test('composited grid preserves dot phase, size and viewport coverage', async ({
   }
   for (const selector of ['.react-flow__controls-zoomout', '.react-flow__controls-zoomin']) {
     for (let i = 0; i < 5; i++) await page.locator(`.world-controls ${selector}`).click();
-    await page.waitForTimeout(250);
-    await check();
+    await expect(check).toPass();
   }
   await page.setViewportSize({ width: 1700, height: 1000 });
   await check();

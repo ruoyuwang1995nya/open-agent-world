@@ -118,11 +118,13 @@ test('wide viewport terrain coverage and sustained pan cost', async ({ page, req
     await page.locator('.world-controls .react-flow__controls-zoomin').click();
     await expect.poll(async () => (await transform()).zoom).toBeCloseTo(Math.min(2.2, zoom * 1.2), 4);
   }
-  await expect.poll(async () => Number(await page.locator('.contour-chunk').first().getAttribute('data-resolution'))).toBe(80);
+  await expect.poll(() => page.locator('.contour-chunk').evaluateAll(chunks => chunks.every(el => el.getAttribute('data-resolution') === '56'))).toBe(true);
   await expect.poll(() => coverage(page)).toBe(true);
-  expect(await page.locator('.contour-chunk').evaluateAll(chunks => chunks.every(el => getComputedStyle(el).willChange === 'auto'))).toBe(true);
-  const stroke = await page.locator('.contour-minor').first().evaluate(el => parseFloat(getComputedStyle(el).strokeWidth));
-  expect(stroke * (await transform()).zoom).toBeCloseTo(1.15, 3);
+  await expect.poll(() => page.locator('.contour-chunk').evaluateAll(chunks => chunks.every(el => getComputedStyle(el).willChange === 'auto'))).toBe(true);
+  await expect.poll(async () => {
+    const stroke = await page.locator('.contour-minor').first().evaluate(el => parseFloat(getComputedStyle(el).strokeWidth));
+    return stroke * (await transform()).zoom;
+  }).toBeCloseTo(1.15, 3);
   await page.setViewportSize({ width: 2560, height: 1440 });
   await expect.poll(() => coverage(page)).toBe(true);
 });

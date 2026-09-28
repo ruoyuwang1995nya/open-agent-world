@@ -180,6 +180,8 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
 .world-canvas .react-flow__pane:active { cursor: grabbing; }
 
 /* Terrain */
+.world-grid-tile { transition: opacity 160ms linear; }
+@media (prefers-reduced-motion: reduce) { .world-grid-tile { transition: none; } }
 .contour-layer, .contour-canvas-experiment { display: contents; }
 .contour-chunk {
   position: absolute;

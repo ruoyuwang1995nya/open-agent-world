@@ -4,6 +4,18 @@ The [2026-09-25 populated-world investigation](panzoom-performance.md) covers
 card lifecycles, scoped drafts, chunk filtering, and the bounded Canvas terrain
 experiment. Its measurements are separate from the historical baselines below.
 
+## Stable contour geometry (2026-09-28)
+
+Terrain now uses a fixed 56-sample resolution per 2048-unit chunk, matching the
+former medium-detail view. Zoom never switches contour or elevation-fill paths,
+including after the gesture settles or a tile is revisited. The worker cache
+remains seed-aware and bounded; entering new coverage still generates tiles.
+
+During zoom, retained SVG geometry follows the native viewport transform.
+Screen-space stroke widths are restored after motion stops, and overview
+compositing and tile retention preserve smooth reversals. The historical LOD
+measurements below describe earlier implementations, not the current policy.
+
 ## Wide viewport terrain (2026-09-21)
 
 At zoom 0.12, a 1920 x 1080 viewport retains 77 terrain SVG tiles, with

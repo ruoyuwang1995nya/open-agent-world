@@ -1,4 +1,5 @@
 import { createPortal } from 'react-dom';
+import { useMotionPresence } from './useMotionPresence';
 import { reportInteraction } from "../state/interactions";
 import { t, useLocale } from "../i18n";
 import { Box, Cpu, HardDrive, Settings2, X } from "lucide-react";
@@ -19,6 +20,7 @@ import { EnvironmentVariablesEditor, environmentVariablesFromValue, environmentV
 export function SettingsPanel() {
   const { locale, setLocale } = useLocale();
   const open = useWorldStore((state) => state.settingsOpen);
+  const presence = useMotionPresence(open);
   const settings = useWorldStore((state) => state.modelSettings);
   const setOpen = useWorldStore((state) => state.toggleSettings);
   const [draft, setDraft] = useState<ModelCatalog>(EMPTY_MODEL_CATALOG);
@@ -54,7 +56,11 @@ export function SettingsPanel() {
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
-    if (!open) { setDraft(EMPTY_MODEL_CATALOG); return; }
+    if (!presence.present) setDraft(EMPTY_MODEL_CATALOG);
+  }, [presence.present]);
+
+  useEffect(() => {
+    if (!open) return;
     setModelLoaded(false);
     setModelError("");
     let active = true;
@@ -93,7 +99,7 @@ export function SettingsPanel() {
     return () => { active = false; };
   }, [open, retry]);
 
-  if (!open) return null;
+  if (!presence.present) return null;
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -130,7 +136,7 @@ export function SettingsPanel() {
   };
 
   return createPortal(
-    <div className="dialog-backdrop settings-backdrop" onMouseDown={(event) => {
+    <div className="dialog-backdrop settings-backdrop" data-motion={presence.closing ? 'closing' : 'open'} aria-hidden={!open} {...(!open ? { inert: '' } : {})} onMouseDown={(event) => {
       if (event.target === event.currentTarget && !busy) setOpen();
     }}>
       <form className="settings-dialog" onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); if (!busy) setOpen(); } }} role="dialog" aria-modal="true" aria-labelledby="settings-title" onSubmit={submit}>
