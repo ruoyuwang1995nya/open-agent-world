@@ -39,7 +39,7 @@ test('wide viewport terrain coverage and sustained pan cost', async ({ page, req
     return { x: matrix.e, zoom: matrix.a };
   });
   expect((await transform()).zoom).toBeCloseTo(0.12, 5);
-  await page.getByRole('button', { name: 'Start Empty', exact: true }).click();
+  await page.getByRole('button', { name: 'Start blank', exact: true }).click();
   await page.waitForTimeout(1500);
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });

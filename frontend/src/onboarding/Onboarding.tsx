@@ -1,7 +1,7 @@
 import { t, useLocale } from "../i18n";
 import { createPortal } from 'react-dom';
 import { getNodesBounds, getViewportForBounds, useReactFlow } from '@xyflow/react';
-import { ArrowRight, ArrowUp, BookOpen, Layers3, ChevronDown, Compass, Pause, RotateCcw, X } from 'lucide-react';
+import { ArrowRight, ArrowUp, BookOpen, FilePlus2, Layers3, ChevronDown, Compass, Pause, RotateCcw, X } from 'lucide-react';
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { useCardLibrary } from '../state/cardLibrary';
 import { useWorldStore } from '../state/worldStore';
@@ -545,10 +545,11 @@ export function Onboarding() {
     <div className={`onboarding-logo-ring ${welcome ? '' : 'has-entered'}`}><OawGuide ringOnly /></div>
     {welcome && <section className="onboarding-welcome" {...(choosingWorkspace ? { inert: '' } : {})} aria-hidden={choosingWorkspace} aria-label={t("Welcome to Open Agent World")}>
       <h1>{t("Open Agent World")}</h1>
+      <p>{t("A canvas for working with AI agents.")}</p>
       <div className="onboarding-actions">
-        <button className="welcome-action welcome-action--primary" disabled={s.busy || sync === 'offline'} onClick={() => void tutorial.start()}><span className="welcome-action-label">{t("Start Tutorial")}</span><span className="welcome-action-footer" aria-hidden="true"><BookOpen size={28} /><ArrowRight size={22} /></span></button>
-        <button ref={chooseButton} className="welcome-action welcome-action--secondary" disabled={s.busy} onClick={() => setChoosingWorkspace(true)}><span className="welcome-action-label">{t("Choose a workspace")}</span><span className="welcome-action-footer" aria-hidden="true"><Layers3 size={28} /><ArrowRight size={22} /></span></button>
-        <button className="welcome-action--quiet" disabled={s.busy} onClick={() => void tutorial.directly()}>{t("Start Empty")}</button>
+        <button className="welcome-action welcome-action--primary" disabled={s.busy || sync === 'offline'} onClick={() => void tutorial.start()}><BookOpen size={22} aria-hidden="true" /><span className="welcome-action-label">{t("Start Tutorial")}</span><ArrowRight size={20} aria-hidden="true" /></button>
+        <button ref={chooseButton} className="welcome-action welcome-action--secondary" disabled={s.busy} onClick={() => setChoosingWorkspace(true)}><Layers3 size={18} aria-hidden="true" /><span className="welcome-action-label">{t("Choose a workspace")}</span></button>
+        <button className="welcome-action welcome-action--secondary" disabled={s.busy} onClick={() => void tutorial.directly()}><FilePlus2 size={18} aria-hidden="true" /><span className="welcome-action-label">{t("Start blank")}</span></button>
       </div>
       {s.error && <p className="onboarding-error" role="alert">{s.error}</p>}
     </section>}

@@ -1,4 +1,6 @@
 {
+  "A canvas for working with AI agents.": ["A canvas for working with AI agents.", "? AI ?????????"],
+  "Start blank": ["Start blank", "?????"],
   "Card implementation unavailable": ["Card implementation unavailable", "卡片实现缺失"],
   "Your card data is preserved. Restore its pack to use it again, or move, rename, or delete this card.": ["Your card data is preserved. Restore its pack to use it again, or move, rename, or delete this card.", "卡片数据已保留。恢复卡包后即可继续使用，也可以移动、重命名或删除此卡片。"],
   "Back to welcome": ["Back to welcome", "??????"],

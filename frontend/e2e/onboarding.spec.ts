@@ -32,11 +32,29 @@ test.describe('canvas onboarding', () => {
   test('welcome choices persist and multiple workspaces open on canvas', async ({ page, request }) => {
     await page.goto('/');
     await expect(page.getByRole('heading', { name: 'Open Agent World' })).toBeVisible();
+    await expect(page.locator('.top-bar')).toBeHidden();
+    await expect(page.locator('.world-controls')).toBeHidden();
+    await expect(page.locator('.component-palette')).toBeHidden();
+    for (const viewport of [{ width: 1280, height: 800 }, { width: 800, height: 600 }, { width: 390, height: 640 }]) {
+      await page.setViewportSize(viewport);
+      for (const button of await page.locator('.onboarding-actions button').all()) await expect(button).toBeInViewport();
+      const primary = (await page.locator('.welcome-action--primary').boundingBox())!;
+      const secondary = await page.locator('.welcome-action--secondary').all();
+      const left = (await secondary[0].boundingBox())!;
+      const right = (await secondary[1].boundingBox())!;
+      expect(primary.width).toBeGreaterThan(left.width * 1.9);
+      expect(left.y).toBe(right.y);
+      expect(left.height).toBe(right.height);
+      await page.screenshot({ path: `test-results/welcome-${viewport.width}.png` });
+    }
+    await page.setViewportSize({ width: 1280, height: 800 });
     await page.screenshot({ path: 'test-results/onboarding-welcome-light.png' });
-    await page.getByRole('button', { name: 'Use dark theme' }).click();
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
     await page.screenshot({ path: 'test-results/onboarding-welcome-dark.png' });
-    await page.getByRole('button', { name: 'Start Empty', exact: true }).click();
+    await page.getByRole('button', { name: 'Start blank', exact: true }).click();
     await expect(page.locator('.onboarding-layer')).toHaveCount(0);
+    await expect(page.locator('.top-bar')).toBeVisible();
+    await expect(page.locator('.world-controls')).toBeVisible();
     await page.reload();
     await expect(page.getByRole('heading', { name: 'Open Agent World' })).toHaveCount(0);
     await page.getByRole('button', { name: 'Help', exact: true }).click();
