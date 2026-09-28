@@ -122,6 +122,8 @@ nav:
       - Host development:
           - Run from source: getting-started.md
           - Architecture: architecture.md
+          - Enterprise foundations: enterprise-foundations.md
+          - Enterprise validation: enterprise-foundations-validation.md
           - Canvas control: canvas-control.md
           - Canvas placement: layout.md
           - Canvas performance: canvas-performance.md
