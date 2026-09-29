@@ -15,6 +15,12 @@ The workflow uses GitHub's automatic `GITHUB_TOKEN` with write permission only i
 
 Failed builds keep their logs under Actions. Fix the issue before tagging a new version. Rerunning a tag workflow can replace assets in its existing draft; it refuses to change an already published Release. Never move a published version tag.
 
+## Release modes
+
+Manual dispatch builds all three installers without creating a Release, even when dispatched against a tag. Pushed `v*` tags build the same installers and create/update a draft only after all builds succeed. Neither mode requires signing or updater keys by default. Marketplace is checked only for pushed tags with `OAW_REQUIRE_MARKETPLACE=true`.
+
+`OAW_SIGNED_RELEASE=true` applies to both manual and tagged builds: missing OS credentials fail closed and built installers must pass signature/notarization verification. Leave it unset or false to permit unsigned Windows and ad-hoc macOS builds. Updater keys are independent: neither key disables updates, both enable signed updater artifacts, and only one key fails preflight. The preflight checks key presence, not cryptographic correspondence; retain a matching generated pair and verify update acceptance before publication. Invalid credentials still fail during import/signing/notarization.
+
 ## Signing and automatic updates
 
 The native desktop menu has **Check for updates**. Builds with a configured updater check once after startup; offline checks do not interrupt startup. The user approves download and later approves installation. Downloads are verified by Tauri's updater signature before the backend is stopped. The UI does not expose native updater commands to hosted pages or plugin JavaScript.
@@ -34,11 +40,12 @@ Set these repository values before enabling this distribution channel:
 | Variable | `APPLE_TEAM_ID` | Apple developer team ID |
 | Secret | `APPLE_ID` | Apple account for notarization |
 | Secret | `APPLE_PASSWORD` | App-specific Apple password |
-| Variable | `OAW_SIGNED_RELEASE` | `true` to require updater keys, platform certificates and notarization |
+| Variable | `OAW_REQUIRE_MARKETPLACE` | `true` to require the deployed official Marketplace for pushed tags only; unset/false permits Store-unavailable releases |
+| Variable | `OAW_SIGNED_RELEASE` | `true` to require platform certificates and notarization (independent of updater keys) |
 
 Certificate acquisition and account verification happen outside this repository. The PFX path supports exportable certificates; hardware-backed or cloud signing needs the provider's signing integration. Signing also does not guarantee immediate Windows SmartScreen reputation. Do not set `OAW_SIGNED_RELEASE=true` until the credentials are installed; the workflow deliberately fails rather than silently publishing unsigned builds under this setting.
 
-Without credentials, preview/manual builds keep the existing unsigned Windows and ad-hoc macOS behavior. The native menu explains that automatic updates are unavailable and offers the official releases page. `createUpdaterArtifacts` and the public key are injected only into configured release builds. Private keys are never written to app configuration or payloads.
+Without credentials, manual and tagged builds keep the existing unsigned Windows and ad-hoc macOS behavior. The native menu explains that automatic updates are unavailable and offers the official releases page. `createUpdaterArtifacts` and the public key are injected only into configured release builds. Private keys are never written to app configuration or payloads.
 
 Updater signing keys are separate from the Windows/Apple publisher certificates. The updater keypair can be generated locally, but its private key needs secure long-term retention before enabling the stable update channel. A test key is not a production signing identity.
 
@@ -62,8 +69,8 @@ The updater can be reviewed and merged while disabled by default. Ready for revi
 
 Before a signed public release:
 
-- Configure and securely retain the updater keypair, Windows signing certificate, and Apple Developer ID/notarization credentials listed above.
-- Deploy and smoke-test the official Marketplace, then bind its origin in `backend/official_marketplace.py`. `scripts/check-marketplace-release.py` enforces this for tags; manual preview builds remain available without it.
+- Configure the Windows signing certificate and Apple Developer ID/notarization credentials listed above. Configure and securely retain the updater keypair only if automatic updates are wanted.
+- If Marketplace support is required, deploy and smoke-test it, bind its origin in `backend/official_marketplace.py`, and set `OAW_REQUIRE_MARKETPLACE=true`. Otherwise leave the constant as `None`; installers remain releasable with Store unavailable.
 - Build real signed installers, verify platform signatures/notarization, and complete the installed-app acceptance below.
 - Verify the stable manifest and asset URLs against the release assets before publishing them together.
 

@@ -44,16 +44,20 @@ jobs:
       APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@v6
-      - name: Require official Marketplace binding for tagged releases
-        if: github.ref_type == 'tag'
+      - name: Preflight signing and updater configuration
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+        run: python scripts/configure-desktop-release.py --preflight
+      - name: Require official Marketplace binding when opted in
+        if: github.event_name == 'push' && github.ref_type == 'tag' && vars.OAW_REQUIRE_MARKETPLACE == 'true'
         run: python scripts/check-marketplace-release.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: astral-sh/setup-uv@v6
       - name: Sync desktop version from tag
         if: github.ref_type == 'tag'
         shell: python
@@ -198,7 +202,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     needs: build
     runs-on: ubuntu-latest
     permissions:
