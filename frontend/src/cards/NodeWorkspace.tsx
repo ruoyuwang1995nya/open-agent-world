@@ -18,7 +18,7 @@ import { useEffect, useMemo, useState } from "react";
 import { apiErrorMessage, worldApi } from "../api/client";
 import { CardName } from "./CardName";
 import { IconButton } from "../components/IconButton";
-import { collapsedSurface, nodePresentation, useNodeSurfaceStore } from "../state/nodeSurfaces";
+import { collapsedSurface, nodePresentation, useNodeSurfaceStore, useSurfaceDraft, surfaceDraftKey } from "../state/nodeSurfaces";
 import { useWorldStore } from "../state/worldStore";
 import { useConversationView } from "../state/conversationView";
 import type { ConversationSession, WorldCard } from "../types/world";
@@ -72,7 +72,7 @@ function AgentWorkspace({ card }: { card: WorldCard }) {
   const cards = useWorldStore((state) => state.cards);
   const allEvents = useWorldStore((state) => state.events);
   const [sessions, setSessions] = useState<ConversationSession[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string>();
+  const [activeSessionId, setActiveSessionId] = useSurfaceDraft<string | undefined>(surfaceDraftKey(card.id, 'agent-history-session'), undefined);
   const [historyError, setHistoryError] = useState<string>();
   const events = useMemo(() => allEvents.filter((event) => (
     event.agent_id === card.id
@@ -195,7 +195,7 @@ export function WorkspaceContent({ card }: WorkspaceSurfaceProps) {
   useLocale();
   const catalog = useWorldStore((state) => state.catalog);
   const { deployed } = useWorkspaceAccess();
-  const [agentTab, setAgentTab] = useState("activity");
+  const [agentTab, setAgentTab] = useSurfaceDraft(surfaceDraftKey(card.id, 'agent-tab'), 'activity');
   const ministerTab = useMinisterRole(s => s.settingsCardId === card.id) && Boolean(card.minister);
   if (isMissingCard(card, catalog)) return <div className="workspace-content"><MissingPlugin card={card} /></div>;
   return (

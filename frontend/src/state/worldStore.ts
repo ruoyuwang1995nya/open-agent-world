@@ -1,4 +1,5 @@
 import { useConversationView } from "./conversationView";
+import { useOpenFiles } from './openFiles';
 import { useLegionDeployments } from "./legionDeployments";
 import { ensureCardsCollected } from "./cardDependencies";
 import type { MapPinLocation } from "../canvas/MapAtlas";
@@ -1897,7 +1898,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
     get().pushToast({
       tone: "neutral",
       title: `${count.toLocaleString()} synthetic cards generated`,
-      detail: "Only cards inside the active chunk ring become live canvas nodes.",
+      detail: "Views are virtualized by screen size and interaction; card geometry stays in the world.",
     });
   },
 
@@ -2218,6 +2219,15 @@ const unsubscribeSurfaces = useWorldStore.subscribe((state, previous) => {
   if (state.cards === previous.cards && state.stressCards === previous.stressCards && state.catalog === previous.catalog) return;
   const cards = [...state.cards, ...state.stressCards];
   const before = [...previous.cards, ...previous.stressCards];
+  // View unmount is not deletion. Invalidate file intent only on model changes.
+  const byId = new Map(cards.map(card => [card.id, card]));
+  for (const card of before) {
+    const next = byId.get(card.id);
+    if (!next || (card.type === 'sandbox' && (card.config?.runtime !== next.config?.runtime
+      || card.config?.workspace_path !== next.config?.workspace_path || card.config?.workspace_access !== next.config?.workspace_access))) {
+      useOpenFiles.getState().clear(card.id);
+    }
+  }
   if (state.catalog !== previous.catalog || cards.length !== before.length
     || cards.some((card, i) => card.id !== before[i]?.id || card.type !== before[i]?.type)) {
     useNodeSurfaceStore.getState().syncCards(cards, state.catalog);

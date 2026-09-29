@@ -2,7 +2,8 @@ import { t, useLocale } from "../i18n";
 import { CircleStop, Folder, Play, RefreshCw, Settings2, SquareArrowOutUpRight } from "lucide-react";
 import { useEffect, useState } from "react";
 import { worldApi, apiErrorMessage } from "../api/client";
-import { useNodeSurfaceStore, type NodeSurfaceLevel } from "../state/nodeSurfaces";
+import { useNodeSurfaceStore, type NodeSurfaceLevel, surfaceDraftKey, useSurfaceDraft } from "../state/nodeSurfaces";
+import { useHydrationLease } from '../canvas/useCardRendering';
 import { useWorldStore } from "../state/worldStore";
 import type { SandboxWorkspaceAccess, WorldCard } from "../types/world";
 import { FolderPathInput } from "../shell/FolderPathInput";
@@ -68,6 +69,15 @@ export function SandboxRuntimeControls({ card, disabled = false }: { card: World
   </div>;
 }
 
+export function sandboxSettingsDirty(card: WorldCard, raw?: string) {
+  const draft = JSON.parse(raw || '{}');
+  return Object.entries({ runtime: card.config.runtime ?? 'auto', workspace: card.config.workspace_path ?? '',
+    access: card.config.workspace_access ?? 'read_write', network: Boolean(card.config.network_enabled),
+    memory: Number(card.config.memory_bytes ?? 536870912), processes: Number(card.config.active_process_limit ?? 64),
+    timeout: Number(card.config.command_timeout ?? 600),
+  }).some(([key, value]) => draft[key] !== undefined && (key === 'workspace' ? String(draft[key]).trim() : draft[key]) !== value);
+}
+
 export function SandboxCardBody({ card, level }: { card: WorldCard; level: NodeSurfaceLevel }) {
   useLocale();
   const loadRuntimes = useWorldStore((state) => state.loadSandboxRuntimes);
@@ -75,6 +85,8 @@ export function SandboxCardBody({ card, level }: { card: WorldCard; level: NodeS
   const socketState = useWorldStore((state) => state.socketState);
   const { info, issue, networkLabel } = useSandboxRuntime(card);
   const [dirty, setDirty] = useState(false);
+  const draftDirty = useNodeSurfaceStore(s => sandboxSettingsDirty(card, s.drafts[`sandbox-settings:${card.id}`]));
+  const [configurationOpen, setConfigurationOpen] = useSurfaceDraft(surfaceDraftKey(card.id, 'sandbox-configuration-open'), false);
   useEffect(() => {
     if (card.ephemeral || level !== "inspector") return;
     void loadRuntimes();
@@ -86,7 +98,7 @@ export function SandboxCardBody({ card, level }: { card: WorldCard; level: NodeS
     useNodeSurfaceStore.getState().openWorkspace(card.id);
   };
   return <div className="expanded-stack sandbox-card-summary nowheel">
-    <SandboxRuntimeControls card={card} disabled={dirty} />
+    <SandboxRuntimeControls card={card} disabled={dirty || draftDirty} />
     <dl className="sandbox-summary-list">
       <div><dt><Folder size={12} /> {t("Folder")}</dt><dd title={workspace}>{workspace}</dd></div>
       <div><dt>{t("Access")}</dt><dd>{(info?.workspace_access ?? card.config.workspace_access) === "read_only" ? t("Read only") : t("Read & write")}</dd></div>
@@ -94,8 +106,8 @@ export function SandboxCardBody({ card, level }: { card: WorldCard; level: NodeS
     </dl>
     {card.config.active_command && <code className="sandbox-current-command" title={card.config.active_command}>{card.config.active_command}</code>}
     {issue && <p className="sandbox-error" role="alert">{issue}</p>}
-    {level === "inspector" && <details className="sandbox-settings"><summary>{t("Configuration")}</summary>
-      <SandboxSettings card={card} compact onDirtyChange={setDirty} />
+    {level === "inspector" && <details className="sandbox-settings" open={configurationOpen} onToggle={event => setConfigurationOpen(event.currentTarget.open)}><summary>{t("Configuration")}</summary>
+      {configurationOpen && <SandboxSettings card={card} compact onDirtyChange={setDirty} />}
     </details>}
     <div className="action-row">
       <button type="button" className="primary-button" onClick={() => openWindow("workspace")}><SquareArrowOutUpRight size={14} /> {t("Open Window")}</button>
@@ -125,6 +137,7 @@ export function SandboxSettings({ card, onDirtyChange, compact = false }: { card
   const timeout = draft.timeout ?? Number(card.config.command_timeout ?? 600), setTimeoutValue = (timeout: number) => edit({ timeout });
   const [cacheMessage, setCacheMessage] = useState("");
   const [pickingFolder, setPickingFolder] = useState(false);
+  useHydrationLease(card.id, 'sandbox-settings-operation', pickingFolder || !!busy);
   const runtime = draft.runtime ?? card.config.runtime ?? "auto", setRuntime = (runtime: string) => edit({ runtime });
   const workspace = draft.workspace ?? card.config.workspace_path ?? "";
   const access = draft.access ?? card.config.workspace_access ?? "read_write", setAccess = (access: SandboxWorkspaceAccess) => edit({ access });
@@ -140,6 +153,7 @@ export function SandboxSettings({ card, onDirtyChange, compact = false }: { card
     || access !== (card.config.workspace_access ?? "read_write")
     || network !== Boolean(card.config.network_enabled) || memory !== Number(card.config.memory_bytes ?? 536870912)
     || processes !== Number(card.config.active_process_limit ?? 64) || timeout !== Number(card.config.command_timeout ?? 600);
+  useHydrationLease(card.id, 'sandbox-settings-edit', dirty);
   useEffect(() => { onDirtyChange?.(dirty || pickingFolder); }, [dirty, pickingFolder, onDirtyChange]);
   const canConfigure = stopped && !busy && !pickingFolder && !!info;
   const selectedRuntime = runtimes?.runtimes.find((item) => item.id === (

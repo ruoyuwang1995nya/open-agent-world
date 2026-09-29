@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { worldApi } from "../api/client";
 import { buildCardDraft } from "../state/helpers";
-import { useNodeSurfaceStore } from "../state/nodeSurfaces";
+import { surfaceDraftKey, useNodeSurfaceStore } from "../state/nodeSurfaces";
 import { useWorldStore } from "../state/worldStore";
 import { useOpenFiles } from "../state/openFiles";
 import type { SandboxInfo, WorldCard } from "../types/world";
@@ -60,6 +60,22 @@ describe("Sandbox workspace interaction", () => {
     });
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+  it('restores draft and file intent after virtualized unmount, without mounting unopened settings', async () => {
+    const view = render(<Workspace />);
+    expect(screen.queryByLabelText('Working folder')).toBeNull();
+    expect(worldApi.getNodeDocument).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Command' }), { target: { value: 'echo retained' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'first.txt' }));
+    await screen.findByText('Contents of first.txt');
+    view.unmount();
+    const projectionKey = surfaceDraftKey(card.id, 'sandbox-static-preview', card.config.runtime, card.config.workspace_path, card.config.workspace_access, false);
+    expect(JSON.parse(useNodeSurfaceStore.getState().drafts[projectionKey])).toMatchObject({ path: 'first.txt', text: 'Contents of first.txt' });
+    expect(useOpenFiles.getState().sources[card.id]?.reference).toMatchObject({ path: 'first.txt' });
+    render(<Workspace />);
+    expect((screen.getByRole('textbox', { name: 'Command' }) as HTMLTextAreaElement).value).toBe('echo retained');
+    expect(await screen.findByText('Contents of first.txt')).toBeTruthy();
+  });
 
   it("keeps synthetic workspaces rendered without requesting nonexistent backend resources", async () => {
     const synthetic = { ...card, id: "stress-3", ephemeral: true };

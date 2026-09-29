@@ -1,4 +1,6 @@
 import { isMissingCard, MissingPlugin } from "./MissingPlugin";
+import { CardLODView } from './CardLODView';
+import { useCardRenderLOD } from '../canvas/useCardRendering';
 import { ConnectionDropSurface } from "./ConnectionDropSurface";
 import { t, useLocale } from "../i18n";
 import { MinisterRoleSettings } from './MinisterRoleCard';
@@ -169,6 +171,7 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
       data-finish={normalizeCardFinish(card.finish)}
       data-card-expanded={visualLevel === "inspector" || visualLevel === "workspace" ? "true" : "false"}
       data-surface-level={level}
+      data-render-lod="full"
       data-activity={activity.phase}
       data-equipment-detail={data.equipmentDetail || undefined}
       data-generation={generationPhase}
@@ -298,4 +301,53 @@ function CollectionAwareCard(props: NodeProps<CanvasNode>) {
   return props.data.collectionOwner ? <StackedCard {...props} />
     : <WorldCardNodeComponent data={props.data} selected={props.selected} dragging={props.dragging} />;
 }
-export const WorldCardNode = memo(CollectionAwareCard);
+export const WorldCardNode = memo(function WorldCardNode(props: NodeProps<CanvasNode>) {
+  const lod = useCardRenderLOD(props.id, props.data.renderLOD);
+  const start = useRef<{ x: number; y: number; level: NodeSurfaceLevel; light: boolean; moved: boolean }>();
+  const activated = useRef(false);
+  if (lod === 'offscreen') return null;
+  const light = lod !== 'full' && !props.data.collectionOwner;
+  // Keep the common click ancestor mounted when selection on mouse-down
+  // replaces the proxy. Hydration is immediate, including during a held press.
+  return <div className="card-render-boundary"
+    data-static-workspace={light && lod === 'mid' && props.data.card.type === 'sandbox'
+      && (props.data.surfaceLevel === 'workspace' || props.data.surfaceLevel === 'inspector') || undefined}
+    onPointerDownCapture={event => {
+      activated.current = false;
+      const ownsPress = light && event.button === 0 && !(event.target as Element).closest(NON_DRAG_SELECTOR);
+      start.current = { x: event.clientX, y: event.clientY, level: props.data.surfaceLevel, light: ownsPress, moved: false };
+      // Native click is otherwise cancelled when its pointer-down target is
+      // removed. Capture on the stable boundary, never on the replaceable view.
+      if (ownsPress) event.currentTarget.setPointerCapture(event.pointerId);
+    }}
+    onPointerMoveCapture={event => { if (start.current && event.buttons && Math.hypot(event.clientX - start.current.x, event.clientY - start.current.y) >= DRAG_THRESHOLD_PX) start.current.moved = true; }}
+    onPointerCancel={() => { start.current = undefined; }}
+    onLostPointerCapture={() => { start.current = undefined; }}
+    onPointerUp={event => {
+      const press = start.current;
+      // The browser may cancel the compatibility click when its original DOM
+      // target was replaced. Finish only this owned, unmoved primary press.
+      if (!press?.light || press.moved || event.button !== 0
+        || Math.hypot(event.clientX - press.x, event.clientY - press.y) >= DRAG_THRESHOLD_PX
+        || props.dragging || useNodeSurfaceStore.getState().dragging) { start.current = undefined; return; }
+      // Deliver the one cancelled compatibility click through the original
+      // React Flow ancestor as well, preserving selection and modifier keys.
+      event.currentTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window,
+        detail: 1, clientX: event.clientX, clientY: event.clientY,
+        shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey }));
+      activated.current = true; start.current = undefined;
+    }}
+    onClick={event => {
+      const press = start.current;
+      if (event.target !== event.currentTarget || !press?.light || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+      const surfaces = useNodeSurfaceStore.getState();
+      if (!surfaces.connectingNodeId && !surfaces.dragging && (press.level === 'node' || press.level === 'preview')) {
+        surfaces.openPrimary(props.id);
+      }
+    }}
+    onClickCapture={event => {
+      if (activated.current && event.detail !== 0) { activated.current = false; event.preventDefault(); event.stopPropagation(); }
+    }}>
+    {light ? <CardLODView {...props} data={{ ...props.data, renderLOD: lod }} /> : <CollectionAwareCard {...props} />}
+  </div>;
+});

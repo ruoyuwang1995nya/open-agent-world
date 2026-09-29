@@ -18,14 +18,15 @@ test('1000 stress cards keep wheel ownership, reversal and pointer anchoring', a
   await page.goto('/');
   await expect(page.locator('.terrain-webgl-background')).toBeVisible();
   await page.evaluate(async () => {
-    const { useWorldStore } = await import('/src/state/worldStore.ts' /* @vite-ignore */);
+    const { useWorldStore } = await import(/* @vite-ignore */ performance.getEntriesByType('resource').find(e => /\/src\/state\/worldStore\.ts(?:\?|$)/.test(e.name))!.name);
     useWorldStore.getState().generateStressWorld(1000);
   });
-  await expect(page.locator('.sandbox-workspace').first()).toBeVisible();
+  await expect(page.locator('.card-lod-view').first()).toBeAttached();
+  await expect(page.locator('.sandbox-workspace')).toHaveCount(0);
   await page.waitForTimeout(500);
 
   const result = await page.evaluate(async () => {
-    const { useWorldStore } = await import('/src/state/worldStore.ts' /* @vite-ignore */);
+    const { useWorldStore } = await import(/* @vite-ignore */ performance.getEntriesByType('resource').find(e => /\/src\/state\/worldStore\.ts(?:\?|$)/.test(e.name))!.name);
     const flow = document.querySelector('#oaw-world-map')!;
     const surface = flow.querySelector<HTMLElement>('.react-flow__viewport')!;
     const read = () => {
