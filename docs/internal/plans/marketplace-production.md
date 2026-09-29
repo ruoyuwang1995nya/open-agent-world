@@ -24,8 +24,8 @@ OAW now resolves `OPEN_AGENT_WORLD_MARKETPLACE_URL` when explicitly present,
 otherwise the single `OFFICIAL_MARKETPLACE_URL` in `backend/official_marketplace.py`.
 An empty override explicitly disables Store for development tests. The official
 constant remains `None` until a real deployment passes smoke. Tagged Desktop
-releases run `scripts/check-marketplace-release.py` to prevent shipping an unbound
-official Store. No user-facing URL preference or startup network check was added.
+releases run `scripts/check-marketplace-release.py` only when
+`OAW_REQUIRE_MARKETPLACE=true`; otherwise Store-unavailable releases are allowed. No user-facing URL preference or startup network check was added.
 
 ## Operator handoff
 

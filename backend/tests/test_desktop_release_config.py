@@ -3,9 +3,11 @@ from pathlib import Path
 import runpy
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-configure = runpy.run_path(str(ROOT / 'scripts/configure-desktop-release.py'))['configure']
+release = runpy.run_path(str(ROOT / 'scripts/configure-desktop-release.py'))
+configure, preflight = release['configure'], release['preflight']
 updates = runpy.run_path(str(ROOT / 'scripts/collect-desktop-update.py'))
 collect, manifest = updates['collect'], updates['manifest']
 TARGETS = updates['TARGETS']
@@ -26,7 +28,6 @@ def release_root(tmp_path):
 
 
 @pytest.mark.parametrize('env', [
-    {'OAW_SIGNED_RELEASE': 'true'},
     {'OAW_UPDATER_PUBLIC_KEY': 'public'},
     {'TAURI_SIGNING_PRIVATE_KEY': 'private'},
 ])
@@ -160,3 +161,72 @@ def test_collect_rejects_invalid_updater_outputs(release_root, damage):
     with pytest.raises(ValueError):
         collect(release_root, 'windows-x64')
     assert not (release_root / 'release-assets/updater-windows-x64.json').exists()
+
+
+@pytest.mark.parametrize('platform', ['Windows', 'macOS'])
+def test_unsigned_configuration_reaches_packaging_without_updater(release_root, platform):
+    env = {'RUNNER_OS': platform}
+    preflight(env)
+    configure(release_root, env)
+    config = json.loads((release_root / 'desktop/src-tauri/tauri.conf.json').read_text())
+    assert not config['bundle'].get('createUpdaterArtifacts', False)
+    assert 'updater' not in config.get('plugins', {})
+
+
+@pytest.mark.parametrize('platform, error', [('Windows', 'Windows certificate missing'),
+                                            ('macOS', 'Apple notarization credentials missing')])
+def test_preflight_fails_closed_without_os_credentials(platform, error):
+    with pytest.raises(SystemExit, match=error):
+        preflight({'RUNNER_OS': platform, 'OAW_SIGNED_RELEASE': 'true'})
+
+
+@pytest.mark.parametrize('keys', [{'OAW_UPDATER_PUBLIC_KEY': 'public'},
+                                 {'TAURI_SIGNING_PRIVATE_KEY': 'private'}])
+def test_preflight_rejects_partial_updater_keys(keys):
+    with pytest.raises(SystemExit, match='Updater public/private key mismatch'):
+        preflight(keys)
+
+
+@pytest.mark.parametrize('platform', ['Windows', 'macOS'])
+def test_strict_os_signing_does_not_require_updater(release_root, platform):
+    env = {'RUNNER_OS': platform, 'OAW_SIGNED_RELEASE': 'true',
+           'WINDOWS_CERTIFICATE': 'pfx', 'OAW_WINDOWS_CERTIFICATE_THUMBPRINT': 'thumbprint',
+           'APPLE_CERTIFICATE': 'p12', 'APPLE_SIGNING_IDENTITY': 'Developer ID: Test',
+           'APPLE_ID': 'account', 'APPLE_PASSWORD': 'password', 'APPLE_TEAM_ID': 'team'}
+    preflight(env)
+    configure(release_root, env)
+    config = json.loads((release_root / 'desktop/src-tauri/tauri.conf.json').read_text())
+    assert not config['bundle'].get('createUpdaterArtifacts', False)
+
+
+def test_strict_preflight_rejects_ad_hoc_apple_identity():
+    with pytest.raises(SystemExit, match='Developer ID'):
+        preflight({'RUNNER_OS': 'macOS', 'OAW_SIGNED_RELEASE': 'true',
+                   'APPLE_CERTIFICATE': 'p12', 'APPLE_SIGNING_IDENTITY': '-',
+                   'APPLE_ID': 'account', 'APPLE_PASSWORD': 'password', 'APPLE_TEAM_ID': 'team'})
+
+
+def test_required_marketplace_rejects_unconfigured_official_url():
+    gate = runpy.run_path(str(ROOT / 'scripts/check-marketplace-release.py'))['main']
+    gate.__globals__['OFFICIAL_MARKETPLACE_URL'] = None
+    with pytest.raises(SystemExit, match='Marketplace required but official URL is unconfigured'):
+        gate()
+
+
+def test_workflow_keeps_release_policies_independent():
+    jobs = yaml.safe_load((ROOT / '.github/workflows/desktop-release.yml').read_text())['jobs']
+    build = jobs['build']
+    assert {entry['platform'] for entry in build['strategy']['matrix']['include']} == set(TARGETS)
+    steps = build['steps']
+    gate = next(step for step in steps if step.get('run') == 'python scripts/check-marketplace-release.py')
+    assert gate['if'] == "github.event_name == 'push' && github.ref_type == 'tag' && vars.OAW_REQUIRE_MARKETPLACE == 'true'"
+    early = next(step for step in steps if step.get('run') == 'python scripts/configure-desktop-release.py --preflight')
+    assert steps.index(early) < steps.index(next(step for step in steps if step.get('name') == 'Install Rust'))
+    for name in ('Verify Windows installer signature', 'Verify macOS notarization'):
+        check = next(step for step in steps if step.get('name') == name)
+        assert "env.OAW_SIGNED_RELEASE == 'true'" in check['if']
+    assert jobs['release']['needs'] == 'build'
+    assert jobs['release']['if'] == "github.event_name == 'push' && github.ref_type == 'tag'"
+    publish = jobs['release']['steps'][-1]['run']
+    assert '--draft' in publish
+    assert 'Refusing to replace a published release' in publish
