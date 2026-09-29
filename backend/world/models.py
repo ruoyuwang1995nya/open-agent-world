@@ -261,10 +261,17 @@ class CardsUpdate(BaseModel):
         return value
 
 
+class MissingPlugin(BaseModel):
+    """Read-time diagnostic; never replaces persisted plugin identity or data."""
+    plugin_id: str
+    reason: Literal["plugin_missing", "plugin_disabled", "type_missing", "owner_mismatch", "endpoint_missing"]
+
+
 class Card(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    missing_plugin: MissingPlugin | None = None
     parent_id: str | None = None
     equipment: EquipmentBinding | None = None
     minister: MinisterRole | None = None
@@ -314,6 +321,7 @@ class Edge(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    missing_plugin: MissingPlugin | None = None
     source: str
     target: str
     relationship: str
