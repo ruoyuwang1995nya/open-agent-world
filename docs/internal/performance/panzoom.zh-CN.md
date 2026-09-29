@@ -1,7 +1,7 @@
 # 画布平移与缩放性能（2026-09-25）
 
 > Historical investigation. The SVG terrain renderer and Canvas2D experiment have
-> since been removed. See [the current WebGL background](terrain-webgl.md) and
+> since been removed. See [the current WebGL background](../../terrain-webgl.md) and
 > [the 1,000-card input fix](stress-zoom.md). Old renderer flags and SVG-specific
 > benchmark variants below describe the earlier revision, not the current app.
 

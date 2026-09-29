@@ -107,4 +107,4 @@ fresh isolated profiles. Packaging reuses a copy of completed wheel caches with
 `--require-hashes`; dependency versions and lockfiles were not changed. Existing
 Starlette TestClient deprecation and Vite large-chunk warnings remain.
 
-Commands and architecture details: [Pack Store Client V0](pack-store.md).
+Commands and architecture details: [Pack Store Client V0](../../pack-store.md).

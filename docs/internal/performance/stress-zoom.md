@@ -30,7 +30,7 @@ layout during workspace mounting.
 
 No terrain shader, terrain generation, card presentation default, React Flow
 virtualization setting or wheel normalization changed in this fix. The subsequent
-[WebGL cleanup](terrain-webgl.md) removed the legacy SVG renderer and A/B switch.
+[WebGL cleanup](../../terrain-webgl.md) removed the legacy SVG renderer and A/B switch.
 Further card rendering optimization remains separate from that cleanup.
 
 ## Measurements

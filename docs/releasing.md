@@ -17,7 +17,7 @@ Failed builds keep their logs under Actions. Fix the issue before tagging a new 
 
 ## Signing and automatic updates
 
-The native desktop menu has **Check for updates / 检查更新**. Builds with a configured updater check once after startup; offline checks do not interrupt startup. The user approves download and later approves installation. Downloads are verified by Tauri's updater signature before the backend is stopped. The UI does not expose native updater commands to hosted pages or plugin JavaScript.
+The native desktop menu has **Check for updates**. Builds with a configured updater check once after startup; offline checks do not interrupt startup. The user approves download and later approves installation. Downloads are verified by Tauri's updater signature before the backend is stopped. The UI does not expose native updater commands to hosted pages or plugin JavaScript.
 
 Set these repository values before enabling this distribution channel:
 

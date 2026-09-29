@@ -34,7 +34,7 @@ shadow feathers into the unmodified canvas. Clear card content uses existing nat
 The SVG core supplies hit testing; transparent bounding corners and feather tails have no pointer capture.
 Ports, saved edges and new-connection previews use the same outline geometry.
 The activated decorative material uses a shared WebGL shader and generated distance texture; see
-[SHADOW_GAS_BOUNDARY.md](SHADOW_GAS_BOUNDARY.md) for parameters, lifecycle, verification and limits.
+[SHADOW_GAS_BOUNDARY.md](shadow-gas-boundary.md) for parameters, lifecycle, verification and limits.
 
 The existing finite canvas animation loop interpolates positions, outline points and dimensions. It restarts
 from the current presentation when interrupted. Hover state and live member-drag positions are transient,

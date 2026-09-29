@@ -39,3 +39,19 @@ retain their documented prerequisite skips. These checks do not establish
 native Sandbox acceptance, real model/network acceptance or multi-user
 enterprise readiness. The workflow does not configure branch protection;
 repository administrators can require its checks in the branch ruleset.
+
+## Documentation
+
+`docs.yml` checks PRs to `dev`/`main` and pushes to `dev` without path filters:
+removing a source file can break a documentation link even in a code-only PR.
+Its `build` job installs only `scripts/docs-requirements.txt` and runs
+`python scripts/docs.py check`. This validates source inventory, heading/language
+rules, repository links, the strict MkDocs build, and generated links/search.
+
+The separate `Documentation tutorial examples` job uses locked backend test
+dependencies and installs the Hello World and Greeter entry points. Pages deploys
+only after both jobs pass on `dev`, outside pull requests. Build success and
+deployment success remain separate results.
+
+Local setup and the identical validation command are in the
+[documentation maintenance guide](../docs/developers/documentation.md).

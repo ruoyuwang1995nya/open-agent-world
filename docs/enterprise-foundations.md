@@ -118,7 +118,7 @@ their declared dependencies. Checks must pass; no `continue-on-error` bypass is 
 Repository administrators still need to configure these checks as required on
 `dev`; adding a workflow does not alter GitHub branch protection.
 The current checks and the baseline reconciliation are recorded in
-[the validation report](enterprise-foundations-validation.md). Local focused
+[the validation report](internal/validation/enterprise-foundations.md). Local focused
 checks and complete remote jobs remain distinct evidence.
 
 ## Next changes, in dependency order
