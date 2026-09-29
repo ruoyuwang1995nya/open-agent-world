@@ -1,5 +1,10 @@
 # Canvas interaction performance
 
+> Historical investigation. The SVG terrain renderer and Canvas2D experiment have
+> since been removed. See [the current WebGL background](terrain-webgl.md) and
+> [the 1,000-card input fix](stress-zoom.md). Old renderer flags and SVG-specific
+> benchmark variants below describe the earlier revision, not the current app.
+
 The [2026-09-25 populated-world investigation](panzoom-performance.md) covers
 card lifecycles, scoped drafts, chunk filtering, and the bounded Canvas terrain
 experiment. Its measurements are separate from the historical baselines below.

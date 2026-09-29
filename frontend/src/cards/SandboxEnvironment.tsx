@@ -34,10 +34,12 @@ export function SandboxEnvironment({ card }: { card: WorldCard }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   async function refresh() {
+    if (card.ephemeral) return;
     const [status, resolved] = await Promise.all([worldApi.getCredentialBindings(card.id), worldApi.sandboxWorkspace<EffectiveEnvironment>(card.id, "configuration")]);
     setBindings(status); setEffective(resolved);
   }
   async function reload() {
+    if (card.ephemeral) return;
     setSecrets({});
     try {
       const doc = await worldApi.getNodeDocument(card.id);
@@ -45,8 +47,8 @@ export function SandboxEnvironment({ card }: { card: WorldCard }) {
       await refresh(); setError("");
     } catch (e) { setError(apiErrorMessage(e)); }
   }
-  useEffect(() => { void reload(); }, [card.id]);
-  useEffect(() => { void refresh().catch(e => setError(apiErrorMessage(e))); }, [link?.source, configurationEvent]);
+  useEffect(() => { void reload(); }, [card.id, card.ephemeral]);
+  useEffect(() => { void refresh().catch(e => setError(apiErrorMessage(e))); }, [card.id, card.ephemeral, link?.source, configurationEvent]);
   async function save() {
     setBusy(true); setError("");
     try {

@@ -76,10 +76,10 @@ export function SandboxCardBody({ card, level }: { card: WorldCard; level: NodeS
   const { info, issue, networkLabel } = useSandboxRuntime(card);
   const [dirty, setDirty] = useState(false);
   useEffect(() => {
-    if (level !== "inspector") return;
+    if (card.ephemeral || level !== "inspector") return;
     void loadRuntimes();
     void refreshSandbox(card.id);
-  }, [card.id, level, loadRuntimes, refreshSandbox, socketState]);
+  }, [card.id, card.ephemeral, level, loadRuntimes, refreshSandbox, socketState]);
   const workspace = card.config.workspace_path ?? t("Managed workspace");
   const openWindow = (tab: "workspace" | "settings") => {
     useNodeSurfaceStore.getState().setDraft(`sandbox-tab:${card.id}`, tab);
@@ -130,9 +130,10 @@ export function SandboxSettings({ card, onDirtyChange, compact = false }: { card
   const access = draft.access ?? card.config.workspace_access ?? "read_write", setAccess = (access: SandboxWorkspaceAccess) => edit({ access });
 
   useEffect(() => {
+    if (card.ephemeral) return;
     void loadRuntimes();
     void refreshSandbox(card.id);
-  }, [card.id, loadRuntimes, refreshSandbox, socketState]);
+  }, [card.id, card.ephemeral, loadRuntimes, refreshSandbox, socketState]);
 
   const dirty = runtime !== (card.config.runtime ?? "auto")
     || (workspace.trim() || null) !== (card.config.workspace_path ?? null)

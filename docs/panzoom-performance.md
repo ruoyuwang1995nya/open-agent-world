@@ -1,5 +1,10 @@
 # 画布平移与缩放性能（2026-09-25）
 
+> Historical investigation. The SVG terrain renderer and Canvas2D experiment have
+> since been removed. See [the current WebGL background](terrain-webgl.md) and
+> [the 1,000-card input fix](stress-zoom.md). Old renderer flags and SVG-specific
+> benchmark variants below describe the earlier revision, not the current app.
+
 本轮基于 `dev` 的 `5c79c40`，保留 React Flow、`onlyRenderVisibleElements`、chunk 获取、terrain geometry worker、插件 lazy import 和现有 surface 层级。没有增加性能模式、配置项或卡牌角标。
 
 **结论：本轮减少了不必要的文档读取、隐藏界面工作和大 Legion 筛选成本，但没有证明高密度真实卡牌已经获得普遍的平滑 pan/zoom。生产保留优化后的 SVG。** 浏览器结果波动明显，最终主矩阵的混合 SVG 帧间隔 p95 为 433.1 ms，基线为 416.4 ms；不能用中途某次较好的结果代替最终代码的测量。

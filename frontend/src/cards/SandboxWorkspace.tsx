@@ -123,11 +123,14 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
     ? card.config.output.map(String).slice(-250).join("\n")
     : history.map(h => [`$ ${h.argv.at(-1) ?? h.argv.join(" ")}`, h.stdout, h.stderr, h.error].filter(Boolean).join("\n")).join("\n");
   useEffect(() => {
+    // An empty terminal starts at the top already. Reading scrollHeight while
+    // many workspaces mount during canvas culling forces layout for each one.
+    if (!output && !draft) return;
     if (followOutput.current && terminalScroll.current) terminalScroll.current.scrollTop = terminalScroll.current.scrollHeight;
   }, [output, draft, terminalTab, tab]);
-  async function refreshHistory() { if (!terminalAllowed) return; setHistory(await worldApi.sandboxWorkspace<Receipt[]>(card.id, "history")); }
+  async function refreshHistory() { if (card.ephemeral || !terminalAllowed) return; setHistory(await worldApi.sandboxWorkspace<Receipt[]>(card.id, "history")); }
   async function refreshFiles() {
-    if (!filesAllowed) return;
+    if (card.ephemeral || !filesAllowed) return;
     const current = fileRequest("roots");
     setLoading(s => ({ ...s, roots: true }));
     try {
@@ -155,7 +158,13 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
     void refreshFiles();
     return () => { context.live = false; context.generation++; context.requests.clear(); useOpenFiles.getState().clear(card.id); };
   }, [context]);
-  useEffect(() => { if (!deployed) void loadRuntimes(); void refreshSandbox(card.id); void refreshHistory().catch(e => setError(apiErrorMessage(e))); }, [card.id, socket]);
+  useEffect(() => {
+    // Stress cards have no backend runtime. Culling must not launch requests for
+    // synthetic IDs every time their workspace enters the viewport.
+    if (card.ephemeral) return;
+    if (!deployed) void loadRuntimes();
+    void refreshSandbox(card.id); void refreshHistory().catch(e => setError(apiErrorMessage(e)));
+  }, [card.id, card.ephemeral, socket]);
   const previousStatus = useRef(card.status);
   useEffect(() => {
     const becameReady = previousStatus.current !== "ready" && card.status === "ready";
@@ -165,10 +174,10 @@ export function SandboxWorkspace({ card }: { card: WorldCard }) {
   useEffect(() => { void refreshHistory().catch(e => setError(apiErrorMessage(e))); }, [card.status, busy]);
   // Poll receipts only while a command is active, never the file tree.
   useEffect(() => {
-    if (!running && card.status !== "running") return;
+    if (card.ephemeral || (!running && card.status !== "running")) return;
     const timer = window.setInterval(() => { void refreshHistory().catch(() => {}); void refreshSandbox(card.id); }, 2000);
     return () => window.clearInterval(timer);
-  }, [!!running, card.status, card.id]);
+  }, [!!running, card.status, card.id, card.ephemeral]);
   async function expand(root: string, path: string) {
     const key = `${root}:${path}`;
     if (expanded[key]) { setExpanded(s => ({ ...s, [key]: false })); return; }

@@ -1,8 +1,10 @@
-import { useEffect, useRef, type RefObject } from 'react';
+import { useCallback, useEffect, useRef, type RefObject } from 'react';
 import { useReactFlow, useStoreApi, type Viewport } from '@xyflow/react';
 
 export const MIN_CANVAS_ZOOM = 0.12;
 export const MAX_CANVAS_ZOOM = 2.2;
+const ZOOM_DURATION = 180;
+const sameViewport = (a: Viewport, b: Viewport) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y) + Math.abs(a.zoom - b.zoom) < 0.00001;
 
 // Match XYFlow's wheel normalization, including line/page wheels and Mac pinch.
 export function wheelZoomTarget(zoom: number, event: Pick<WheelEvent, 'deltaY' | 'deltaMode' | 'ctrlKey'>, mac: boolean) {
@@ -18,31 +20,43 @@ export function useSmoothWheelZoom(
 ) {
   const { getViewport, setViewport } = useReactFlow();
   const store = useStoreApi();
-  const writing = useRef(false);
+  const lastWritten = useRef<Viewport>();
   const finish = useRef(onFinish);
   finish.current = onFinish;
+  // XYFlow defers move-end with setTimeout(0). Match the actual write instead
+  // of a synchronous flag, without swallowing another control's camera change.
+  const consumeMoveEnd = useCallback((viewport: Viewport) => {
+    const own = lastWritten.current;
+    if (!own || !sameViewport(own, viewport)) return false;
+    lastWritten.current = undefined;
+    return true;
+  }, []);
 
   useEffect(() => {
     const element = wrapper.current;
     if (!element) return;
     const media = matchMedia('(prefers-reduced-motion: reduce)');
     let frame = 0;
-    let pending: { from: Viewport; to: Viewport; applied: Viewport; start: number } | undefined;
-    const same = (a: Viewport, b: Viewport) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y) + Math.abs(a.zoom - b.zoom) < 0.00001;
+    let interruptedAt = -Infinity;
+    let pending: { from: Viewport; to: Viewport; applied: Viewport; start: number; direction: number } | undefined;
     const stop = () => {
-      cancelAnimationFrame(frame);
+      cancelAnimationFrame(frame); frame = 0;
       if (pending) { pending = undefined; finish.current(getViewport()); }
     };
+    const interrupt = () => { interruptedAt = performance.now(); stop(); };
     const apply = (viewport: Viewport) => {
       // Public XYFlow API updates nodes, hit testing and terrain together.
-      // Its synchronous move-end callback must not persist every animation frame.
-      writing.current = true;
-      try { void setViewport(viewport); } finally { writing.current = false; }
+      lastWritten.current = viewport;
+      void setViewport(viewport);
     };
-    const tick = (now: number) => {
+    const tick = () => {
+      frame = 0;
       if (!pending) return;
-      if (!same(getViewport(), pending.applied)) { stop(); return; }
-      const progress = Math.min(1, (now - pending.start) / 180);
+      if (!sameViewport(getViewport(), pending.applied)) { stop(); return; }
+      // RAF's timestamp may predate a wheel handler when the main thread stalls.
+      // Advance by input age; never run an easing curve backwards or restart a
+      // fresh 180 ms tail for an event that was already waiting in the queue.
+      const progress = Math.max(0, Math.min(1, (performance.now() - pending.start) / ZOOM_DURATION));
       const eased = 1 - (1 - progress) ** 3;
       const { from, to } = pending;
       const next = {
@@ -63,35 +77,41 @@ export function useSmoothWheelZoom(
       if (isScrollable(event.target, element)) { stop(); event.stopPropagation(); return; }
       event.preventDefault();
       event.stopPropagation();
+      const now = performance.now();
+      const inputTime = event.timeStamp > 0 && event.timeStamp <= now ? event.timeStamp : now;
+      if (inputTime < interruptedAt) return;
       const current = getViewport();
-      if (pending && !same(current, pending.applied)) stop();
+      if (pending && !sameViewport(current, pending.applied)) stop();
       // Interrupt an in-flight fit/button transition before taking ownership.
-      apply(current);
-      const zoom = wheelZoomTarget(pending?.to.zoom ?? current.zoom, event, navigator.userAgent.includes('Mac'));
+      if (!pending) apply(current);
+      const direction = Math.sign(event.deltaY);
+      // Reverse from the displayed camera, dropping the previous direction's
+      // unfinished animation. Same-direction events keep their original gain.
+      const base = pending?.direction === direction ? pending.to.zoom : current.zoom;
+      const zoom = wheelZoomTarget(base, event, navigator.userAgent.includes('Mac'));
       const bounds = flow.getBoundingClientRect();
       const x = event.clientX - bounds.left, y = event.clientY - bounds.top;
       const to = { zoom, x: x - (x - current.x) * zoom / current.zoom, y: y - (y - current.y) * zoom / current.zoom };
-      cancelAnimationFrame(frame);
       if (media.matches) { pending = undefined; apply(to); finish.current(to); return; }
-      pending = { from: current, to, applied: current, start: performance.now() };
-      frame = requestAnimationFrame(tick);
+      pending = { from: current, to, applied: current, start: inputTime, direction };
+      if (!frame) frame = requestAnimationFrame(tick);
     };
     element.addEventListener('wheel', wheel, { capture: true, passive: false });
     // Direct manipulation or another control takes ownership immediately.
-    document.addEventListener('pointerdown', stop, true);
-    document.addEventListener('keydown', stop, true);
-    document.addEventListener('visibilitychange', stop);
-    window.addEventListener('blur', stop);
-    media.addEventListener('change', stop);
+    document.addEventListener('pointerdown', interrupt, true);
+    document.addEventListener('keydown', interrupt, true);
+    document.addEventListener('visibilitychange', interrupt);
+    window.addEventListener('blur', interrupt);
+    media.addEventListener('change', interrupt);
     return () => {
       stop();
       element.removeEventListener('wheel', wheel, true);
-      document.removeEventListener('pointerdown', stop, true);
-      document.removeEventListener('keydown', stop, true);
-      document.removeEventListener('visibilitychange', stop);
-      window.removeEventListener('blur', stop);
-      media.removeEventListener('change', stop);
+      document.removeEventListener('pointerdown', interrupt, true);
+      document.removeEventListener('keydown', interrupt, true);
+      document.removeEventListener('visibilitychange', interrupt);
+      window.removeEventListener('blur', interrupt);
+      media.removeEventListener('change', interrupt);
     };
   }, [wrapper, isScrollable, getViewport, setViewport, store]);
-  return writing;
+  return consumeMoveEnd;
 }

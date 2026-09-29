@@ -7,7 +7,7 @@ import { GlueLayer } from "./GlueLayer";
 import { reportInteraction } from "../state/interactions";
 import { findGlue, glueGroup, reflowGlueSurfaces, refreshGlue, beginGlueEdit, cancelGlueRefresh, persistGlue, useGlueStore, type GlueBox, type GlueCandidate } from "../state/glue";
 import { MapAtlas } from "./MapAtlas";
-import { WorldBackground } from './WorldBackground';
+import { TerrainBackground } from './TerrainBackground';
 import { CanvasCardLayers } from './CanvasCardLayers';
 import { LegionDeploymentLayer } from './LegionDeploymentLayer';
 import { stableNode, stableNodeList } from './stableNodes';
@@ -54,7 +54,6 @@ import { usePaletteDropTarget, type PalettePointerLocation } from "../palette/po
 import { getConnectionOptions, validateConnection } from "../state/relationships";
 import { useWorldStore } from "../state/worldStore";
 import { NODE_SURFACE_SIZE, surfaceSizeFor, surfaceLevelForNode, useNodeSurfaceStore, type NodeSurfaceLevel, type SurfaceSize } from "../state/nodeSurfaces";
-import { ContourLayer } from "./ContourLayer";
 import { LocalMiniMap } from "./LocalMiniMap";
 import { GenerationLayer } from "../effects/GenerationLayer";
 import {
@@ -462,15 +461,15 @@ export function WorldCanvas() {
     setViewportState({ ...next, ...size });
   }, [dimensions, setViewportState]);
 
-  const wheelWriting = useSmoothWheelZoom(wrapper, isScrollableArea, next => {
+  const consumeWheelMoveEnd = useSmoothWheelZoom(wrapper, isScrollableArea, next => {
     commitViewport(next);
     reportInteraction({ type: 'viewport', ...next });
   });
   const onMoveEnd: OnMove = useCallback((event, next) => {
-    if (wheelWriting.current) return;
+    if (!event && consumeWheelMoveEnd(next)) return;
     commitViewport(next);
     if (event || document.activeElement?.closest('.world-controls')) reportInteraction({ type: 'viewport', ...next });
-  }, [commitViewport, wheelWriting]);
+  }, [commitViewport, consumeWheelMoveEnd]);
   const onInit: OnInit<CanvasNode, CanvasEdge> = useCallback((instance) => {
     commitViewport(instance.getViewport());
   }, [commitViewport]);
@@ -983,14 +982,13 @@ export function WorldCanvas() {
         aria-label={t("Open Agent World spatial canvas")}
       >
         <CanvasCardLayers />
-        <ContourLayer />
+        <TerrainBackground />
         <GlueLayer nodes={nodes} preview={gluePreview} />
         <ResizeLayer nodes={nodes} setNodes={setNodes} />
         <GenerationLayer />
         <LegionDeploymentLayer />
         {nodes.filter((node) => node.data.equipmentDetail && !node.hidden).map((node) =>
           <SurfaceBridge key={node.id} sourceId={equipmentOriginId(node.id)} targetId={node.id} />)}
-        <WorldBackground />
         <LocalMiniMap />
         <MapAtlas active={pinToolActive} onActiveChange={active => { setPinToolActive(active); if (active) setGlueActive(false); }} glueActive={glueActive} onGlueChange={active => { setGlueActive(active); if (active) setPinToolActive(false); }} />
         <CanvasControls />

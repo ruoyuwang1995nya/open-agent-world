@@ -136,10 +136,10 @@ test('wheel keeps its original gain and pointer anchor, accumulates input and yi
   }
   // Events arriving before a paint still accumulate their entire original strength.
   await page.evaluate(() => {
-    for (const deltaY of [-100, -100, 100]) document.querySelector('#oaw-world-map')!.dispatchEvent(
+    for (const deltaY of [-30, -30, -30]) document.querySelector('#oaw-world-map')!.dispatchEvent(
       new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY, clientX: 630, clientY: 310 }));
   });
-  await expect.poll(async () => (await viewport(page)).zoom).toBeCloseTo(expected * 2 ** 0.2, 4);
+  await expect.poll(async () => (await viewport(page)).zoom).toBeCloseTo(expected * 2 ** 0.18, 4);
   await page.mouse.move(630, 310);
   await page.mouse.wheel(0, -200);
   await page.mouse.down();

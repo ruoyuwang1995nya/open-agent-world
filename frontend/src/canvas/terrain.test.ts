@@ -1,21 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { CHUNK_SIZE } from "../state/chunks";
 import {
-  getTerrainChunk,
   parseChunkKey,
   sampleTerrainChunk,
   terrainHeightAt,
-  TERRAIN_RESOLUTION,
 } from "./terrain";
 
-describe("procedural contour terrain", () => {
-  it("keeps seed-specific terrain deterministic and isolates cached geometry", () => {
-    const first = getTerrainChunk(-1, 0, 32, 123);
-    const second = getTerrainChunk(-1, 0, 32, 456);
-    expect(first).toBe(getTerrainChunk(-1, 0, 32, 123));
-    expect(first.key).not.toBe(second.key);
-    expect(first.minorPath).not.toBe(second.minorPath);
-    expect(first.fillPaths).not.toEqual(second.fillPaths);
+describe("procedural terrain field", () => {
+  it("keeps seed-specific terrain deterministic", () => {
+    const first = sampleTerrainChunk(-1, 0, 32, 123);
+    const second = sampleTerrainChunk(-1, 0, 32, 456);
+    expect(first.values).toEqual(sampleTerrainChunk(-1, 0, 32, 123).values);
+    expect(first.values).not.toEqual(second.values);
     const left = sampleTerrainChunk(-1, 0, 32, 456);
     const right = sampleTerrainChunk(0, 0, 32, 456);
     for (let row = 0; row <= 32; row += 1) {
@@ -42,28 +38,10 @@ describe("procedural contour terrain", () => {
     expect(terrainHeightAt(0, 2 * CHUNK_SIZE)).toBeCloseTo(left.values[resolution], 6);
   });
 
-  it("caches the canonical medium-detail chunk geometry", () => {
-    const chunk = getTerrainChunk(0, 0, TERRAIN_RESOLUTION);
-    expect(chunk).toBe(getTerrainChunk(0, 0, TERRAIN_RESOLUTION));
-    expect(`${chunk.minorPath}${chunk.majorPath}`).toContain("Q");
-  });
-
   it("parses signed chunk keys without accepting malformed values", () => {
     expect(parseChunkKey("-12:7")).toEqual({ x: -12, y: 7 });
     expect(parseChunkKey("12.5:7")).toBeUndefined();
     expect(parseChunkKey("bad:key")).toBeUndefined();
   });
 
-  it("closes elevation fills at chunk boundaries across sampling resolutions", () => {
-    for (const resolution of [32, 56, 80]) {
-      for (const [x, y] of [[-1, -1], [0, -1], [-1, 0], [0, 0]]) {
-        const chunk = getTerrainChunk(x, y, resolution);
-        expect(chunk.fillPaths.some(Boolean)).toBe(true);
-        for (const path of chunk.fillPaths.filter(Boolean)) {
-          expect(path).not.toMatch(/NaN|Infinity/);
-          expect((path.match(/M/g) ?? []).length).toBe((path.match(/Z/g) ?? []).length);
-        }
-      }
-    }
-  });
 });

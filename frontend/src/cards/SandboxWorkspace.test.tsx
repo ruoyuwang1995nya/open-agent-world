@@ -61,6 +61,22 @@ describe("Sandbox workspace interaction", () => {
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+  it("keeps synthetic workspaces rendered without requesting nonexistent backend resources", async () => {
+    const synthetic = { ...card, id: "stress-3", ephemeral: true };
+    const view = render(<SandboxWorkspace card={synthetic} />);
+    expect(screen.getByRole("textbox", { name: "Command" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh files" }));
+    await act(async () => useWorldStore.setState({ socketState: "live" }));
+    view.unmount();
+    render(<SandboxWorkspace card={synthetic} />);
+    await act(async () => {});
+    expect(worldApi.getSandbox).not.toHaveBeenCalled();
+    expect(worldApi.getSandboxRuntimes).not.toHaveBeenCalled();
+    expect(worldApi.sandboxWorkspace).not.toHaveBeenCalled();
+    expect(worldApi.getNodeDocument).not.toHaveBeenCalled();
+    expect(worldApi.getCredentialBindings).not.toHaveBeenCalled();
+  });
+
   it("keeps command drafts and file selection connected when their sections move out and back", async () => {
     const hosts = new Map<string, HTMLDivElement>();
     const register = ({ id, host }: WorkspaceSectionRegistration) => {
