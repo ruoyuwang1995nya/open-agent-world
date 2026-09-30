@@ -1,4 +1,6 @@
 import { useConversationView } from "./conversationView";
+import { useOpenFiles } from './openFiles';
+import { useLegionDeployments } from "./legionDeployments";
 import { ensureCardsCollected } from "./cardDependencies";
 import type { MapPinLocation } from "../canvas/MapAtlas";
 import { create } from "zustand";
@@ -27,7 +29,7 @@ import type {
   WorldPosition,
   WorldSnapshot,
 } from "../types/world";
-import { filterCardsToChunks, getViewportChunkKeys, viewportCenterToWorld } from "./chunks";
+import { filterCardsToChunks, getViewportChunkKeys, sameViewportChunks, viewportCenterToWorld } from "./chunks";
 import { EMPTY_CATALOG, getNodeType } from "./catalog";
 import { buildCardDraft, makeStressCards, mergeCardPatch } from "./helpers";
 import { summarizeLegionSelection } from "./legions";
@@ -42,6 +44,7 @@ import {
 } from "./modelSettings";
 
 import { applyGraphEvents, eventType, isGraphEvent, isOlder, mergeCards, mergeEdges, sequenceEvents, type Tombstones } from "./graphEvents";
+import { forgetTaskBoardCache } from '../cards/taskBoardCache';
 export { isOlder, mergeCards, mergeEdges } from "./graphEvents";
 
 export type SyncState = "loading" | "online" | "syncing" | "offline";
@@ -221,6 +224,9 @@ async function deletePersistentCards(cards: WorldCard[]): Promise<void> {
   } else {
     await worldApi.deleteNodes(persistent.map(card => card.id));
   }
+  const ids = persistent.map(card => card.id);
+  useNodeSurfaceStore.getState().forgetDrafts(ids);
+  forgetTaskBoardCache(ids);
 }
 
 function appendHistory(
@@ -354,7 +360,7 @@ interface WorldState {
   updateCard: (
     id: string,
     patch: Partial<Omit<WorldCard, "id" | "type">>,
-    options?: { expectedRevision: number },
+    options?: { expectedRevision?: number; throwOnError?: boolean },
   ) => Promise<void>;
   updateCardPositions: (updates: Array<{ id: string; position: WorldPosition; parent_id?: string | null }>, stationaryIds?: string[]) => Promise<void>;
   resizeContainer: (id: string, size: WorldCard['size'], position?: WorldPosition) => Promise<void>;
@@ -368,9 +374,9 @@ interface WorldState {
   instantiateLegion: (
     id: string,
     anchor?: WorldPosition,
-    options?: LegionDeployOptions & { blueprint?: LegionSummary },
+    options?: LegionDeployOptions & { blueprint?: LegionSummary; silentSuccess?: boolean },
   ) => Promise<LegionInstantiation | undefined>;
-  dissolveContainer: (id: string) => Promise<void>;
+  dissolveContainer: (id: string, options?: { silentSuccess?: boolean }) => Promise<void>;
   deleteCard: (id: string) => Promise<void>;
   deleteCards: (ids: string[]) => Promise<void>;
   requestConnection: (source?: string | null, target?: string | null) => void;
@@ -481,7 +487,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
 
   initialize: async () => {
     const mutationEpoch = worldMutationEpoch;
-    const modelsLoaded = worldApi.getModelConnections().then(modelCatalog => set(state => modelCatalog.revision >= state.modelCatalog.revision ? { modelCatalog } : {}))
+    void worldApi.getModelConnections().then(modelCatalog => set(state => modelCatalog.revision >= state.modelCatalog.revision ? { modelCatalog } : {}))
       .catch(error => get().pushToast({ tone: "error", title: "Model settings unavailable", detail: apiErrorMessage(error) }));
     const keys = getViewportChunkKeys(get().viewport);
     set({ activeChunkKeys: keys });
@@ -493,7 +499,6 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
         loadLegionLibrary(),
       ]);
       const legionError = library.ok ? undefined : apiErrorMessage(library.error);
-      await modelsLoaded;
       set({
         catalog,
         terrainSeed: snapshot.terrain_seed ?? 0x5eeda11,
@@ -630,6 +635,14 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
   },
 
   setViewport: (viewport) => {
+    const previous = get().viewport;
+    if (previous.x === viewport.x && previous.y === viewport.y && previous.zoom === viewport.zoom
+      && previous.width === viewport.width && previous.height === viewport.height) return;
+    if (sameViewportChunks(previous, viewport)) {
+      // Persist the camera, but leave card filtering and chunk requests asleep.
+      set({ viewport });
+      return;
+    }
     const keys = getViewportChunkKeys(viewport);
     set({ viewport, activeChunkKeys: keys });
     void get().ensureChunks(keys);
@@ -787,6 +800,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
         syncState: "online",
       }));
       get().pushToast({ tone: "error", title: "Change was not saved", detail: apiErrorMessage(error) });
+      if (options?.throwOnError) throw error;
     }
   }),
 
@@ -1042,71 +1056,80 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
     }
   })),
 
-  instantiateLegion: (id, anchor, options = {}) => withHistoryTransaction(() => withLegionOperation(id, async () => {
-    const legion = options.blueprint ?? get().legions.find((item) => item.id === id);
-    if (!legion) {
-      get().pushToast({ tone: "error", title: "Legion is unavailable", detail: "Refresh the Legion library and try again." });
-      return undefined;
-    }
-    if (!legion.compatible) {
-      get().pushToast({
-        tone: "error",
-        title: `${legion.name} cannot be deployed`,
-        detail: legion.issues.join(" ") || "One or more required plugins are unavailable.",
-      });
-      return undefined;
-    }
-    if (get().syncState === "offline") {
-      get().pushToast({ tone: "error", title: "Deployment paused", detail: "Reconnect the world service first." });
-      return undefined;
-    }
-    if (!await ensureCardsCollected(legion.required_card_ids ?? legion.node_types)) return undefined;
-    const finalAnchor = anchor ?? viewportCenterToWorld(get().viewport);
-    const origin = {
-      x: finalAnchor.x - legion.bounds.width / 2,
-      y: finalAnchor.y - legion.bounds.height / 2,
-    };
-    set({ syncState: "syncing" });
-    try {
-      const deployment = { unwrap: options.unwrap, preset: options.preset ?? legion.preset };
-      const instance = await worldApi.instantiateLegion(id, origin, deployment);
-      useNodeSurfaceStore.getState().restorePresentation(instance.nodes, get().catalog, instance.presentation);
-      const cards = instance.nodes.map(copyCard);
-      const edges = instance.edges.map(copyEdge);
-      markWorldMutation();
-      set((state) => ({
-        cards: mergeCards(state.cards, instance.nodes, state.cardTombstones),
-        edges: mergeEdges(state.edges, instance.edges, state.edgeTombstones),
-        selectedCardIds: deployedLegionSelection(cards, deployment.preset && !deployment.unwrap),
-        selectionRevision: state.selectionRevision + 1,
-        selectedEdgeId: undefined,
-        syncState: "online",
-        undoStack: appendHistory(state.undoStack, {
-          id: ++historySequence,
-          label: `Deploy ${legion.name}`,
-          kind: "legion-instantiated",
-          options: deployment,
-          legionId: legion.id,
-          position: { ...origin },
-          cards,
-          edges,
-        }),
-        redoStack: [],
-      }));
-      get().pushToast({
-        tone: "success",
-        title: `${legion.name} deployed`,
-        detail: `${instance.nodes.length} cards and ${instance.edges.length} links instantiated.`,
-      });
-      return instance;
-    } catch (error) {
-      set({ syncState: "online" });
-      get().pushToast({ tone: "error", title: "Legion was not deployed", detail: apiErrorMessage(error) });
-      return undefined;
-    }
-  })),
+  instantiateLegion: (id, anchor, options = {}) => {
+    // Feedback and the drop anchor belong to the gesture, even when another
+    // history operation is still running. Pending markers are never graph nodes.
+    const initial = options.blueprint ?? get().legions.find((item) => item.id === id);
+    const finalAnchor = { ...(anchor ?? viewportCenterToWorld(get().viewport)) };
+    const pendingId = initial ? useLegionDeployments.getState().begin(initial.name, finalAnchor) : undefined;
+    return withHistoryTransaction(() => withLegionOperation(id, async () => {
+      const legion = options.blueprint ?? get().legions.find((item) => item.id === id);
+      if (!legion) {
+        get().pushToast({ tone: "error", title: "Legion is unavailable", detail: "Refresh the Legion library and try again." });
+        return undefined;
+      }
+      if (!legion.compatible) {
+        get().pushToast({
+          tone: "error",
+          title: `${legion.name} cannot be deployed`,
+          detail: legion.issues.join(" ") || "One or more required plugins are unavailable.",
+        });
+        return undefined;
+      }
+      if (get().syncState === "offline") {
+        get().pushToast({ tone: "error", title: "Deployment paused", detail: "Reconnect the world service first." });
+        return undefined;
+      }
+      if (!await ensureCardsCollected(legion.required_card_ids ?? legion.node_types)) return undefined;
+      const origin = {
+        x: finalAnchor.x - legion.bounds.width / 2,
+        y: finalAnchor.y - legion.bounds.height / 2,
+      };
+      set({ syncState: "syncing" });
+      try {
+        const deployment = { unwrap: options.unwrap, preset: options.preset ?? legion.preset };
+        if (pendingId !== undefined) useLegionDeployments.getState().start(pendingId);
+        const instance = await worldApi.instantiateLegion(id, origin, deployment);
+        useNodeSurfaceStore.getState().restorePresentation(instance.nodes, get().catalog, instance.presentation);
+        const cards = instance.nodes.map(copyCard);
+        const edges = instance.edges.map(copyEdge);
+        markWorldMutation();
+        set((state) => ({
+          cards: mergeCards(state.cards, instance.nodes, state.cardTombstones),
+          edges: mergeEdges(state.edges, instance.edges, state.edgeTombstones),
+          selectedCardIds: deployedLegionSelection(cards, deployment.preset && !deployment.unwrap),
+          selectionRevision: state.selectionRevision + 1,
+          selectedEdgeId: undefined,
+          syncState: "online",
+          undoStack: appendHistory(state.undoStack, {
+            id: ++historySequence,
+            label: `Deploy ${legion.name}`,
+            kind: "legion-instantiated",
+            options: deployment,
+            legionId: legion.id,
+            position: { ...origin },
+            cards,
+            edges,
+          }),
+          redoStack: [],
+        }));
+        if (!options.silentSuccess) get().pushToast({
+          tone: "success",
+          title: `${legion.name} deployed`,
+          detail: `${instance.nodes.length} cards and ${instance.edges.length} links instantiated.`,
+        });
+        return instance;
+      } catch (error) {
+        set({ syncState: "online" });
+        get().pushToast({ tone: "error", title: "Legion was not deployed", detail: apiErrorMessage(error) });
+        return undefined;
+      }
+    })).finally(() => {
+      if (pendingId !== undefined) useLegionDeployments.getState().finish(pendingId);
+    });
+  },
 
-  dissolveContainer: (id) => withHistoryTransaction(async () => {
+  dissolveContainer: (id, options = {}) => withHistoryTransaction(async () => {
     const group = get().cards.find((c) => c.id === id && isContainer(c, get().catalog));
     if (!group) return;
     const members = get().cards.filter((c) => c.parent_id === id).map(copyCard);
@@ -1121,7 +1144,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
         edges: state.edges.filter((e) => e.source !== id && e.target !== id),
         selectedCardIds: members.map((c) => c.id), selectedEdgeId: undefined, selectionRevision: state.selectionRevision + 1,
         undoStack: appendHistory(state.undoStack, { id: ++historySequence, kind: "group-dissolved", label: "Dissolve container", group: snapshot, members, edges }), redoStack: [] }));
-      get().pushToast({ tone: "neutral", title: `${group.name} dissolved`, detail: "Members and their connections were kept. Ctrl+Z to restore the container." });
+      if (!options.silentSuccess) get().pushToast({ tone: "neutral", title: `${group.name} dissolved`, detail: "Members and their connections were kept. Ctrl+Z to restore the container." });
     } catch (error) { get().pushToast({ tone: "error", title: "Container was not dissolved", detail: apiErrorMessage(error) }); }
   }),
 
@@ -1130,7 +1153,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
   deleteCards: (ids) => withHistoryTransaction(async () => {
     // Container members may have been created server-side since the last snapshot.
     const selectedIds = new Set(ids);
-    if (get().cards.some(card => selectedIds.has(card.id) && isContainer(card, get().catalog))) {
+    if (get().cards.some(card => selectedIds.has(card.id) && (card.missing_plugin || isContainer(card, get().catalog)))) {
       try {
         const snapshot = await worldApi.getWorld();
         const owned = ownedCardIds(snapshot.nodes, ids);
@@ -1150,7 +1173,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
 
     const snapshots = new Map<string, RestorableCard>();
     try {
-      for (const snapshot of await snapshotCardsForHistory(cards.filter(card => !irreversible.has(card.id)))) snapshots.set(snapshot.id, snapshot);
+      for (const snapshot of await snapshotCardsForHistory(cards.filter(card => !card.missing_plugin && !irreversible.has(card.id)))) snapshots.set(snapshot.id, snapshot);
     } catch (error) {
       get().pushToast({ tone: "error", title: "Cards were not removed", detail: `Could not preserve document data for undo: ${apiErrorMessage(error)}` });
       return;
@@ -1166,7 +1189,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
     const removed = cards;
 
     const removedIds = new Set(removed.map((card) => card.id));
-    const cannotUndo = removed.some(card => irreversible.has(card.id));
+    const cannotUndo = removed.some(card => card.missing_plugin || irreversible.has(card.id)) || attachedBefore.some(edge => edge.missing_plugin);
     const attachedEdges = attachedBefore.filter(
       (edge) => removedIds.has(edge.source) || removedIds.has(edge.target),
     );
@@ -1372,7 +1395,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
       set((state) => ({
         edges: state.edges.filter((edge) => edge.id !== id),
         selectedEdgeId: undefined,
-        undoStack: appendHistory(state.undoStack, {
+        undoStack: edge.missing_plugin ? [] : appendHistory(state.undoStack, {
             id: ++historySequence,
             label: "Remove relationship",
             kind: "edge-deleted",
@@ -1732,6 +1755,19 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
         eventStream: sequenced.eventStream,
         eventSequence: sequenced.eventSequence,
       }));
+      // Only confirmed deletions retire drafts. Chunk eviction and stale delete
+      // events must not erase the editor state of an offscreen or restored card.
+      const deleted = graph.filter(event => eventType(event) === 'card_deleted');
+      if (deleted.length) {
+        const live = new Set(get().cards.map(card => card.id));
+        const ids = deleted.flatMap(event => {
+          const node = event.payload.node as { id?: unknown } | undefined;
+          const id = node?.id ?? event.node_id ?? event.agent_id ?? event.sandbox_id ?? event.resource_id;
+          return typeof id === 'string' && !live.has(id) ? [id] : [];
+        });
+        useNodeSurfaceStore.getState().forgetDrafts(ids);
+        forgetTaskBoardCache(ids);
+      }
       if (sequenced.gap) void get().refreshWorld();
     };
     for (const event of events) {
@@ -1862,7 +1898,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
     get().pushToast({
       tone: "neutral",
       title: `${count.toLocaleString()} synthetic cards generated`,
-      detail: "Only cards inside the active chunk ring become live canvas nodes.",
+      detail: "Views are virtualized by screen size and interaction; card geometry stays in the world.",
     });
   },
 
@@ -2183,6 +2219,15 @@ const unsubscribeSurfaces = useWorldStore.subscribe((state, previous) => {
   if (state.cards === previous.cards && state.stressCards === previous.stressCards && state.catalog === previous.catalog) return;
   const cards = [...state.cards, ...state.stressCards];
   const before = [...previous.cards, ...previous.stressCards];
+  // View unmount is not deletion. Invalidate file intent only on model changes.
+  const byId = new Map(cards.map(card => [card.id, card]));
+  for (const card of before) {
+    const next = byId.get(card.id);
+    if (!next || (card.type === 'sandbox' && (card.config?.runtime !== next.config?.runtime
+      || card.config?.workspace_path !== next.config?.workspace_path || card.config?.workspace_access !== next.config?.workspace_access))) {
+      useOpenFiles.getState().clear(card.id);
+    }
+  }
   if (state.catalog !== previous.catalog || cards.length !== before.length
     || cards.some((card, i) => card.id !== before[i]?.id || card.type !== before[i]?.type)) {
     useNodeSurfaceStore.getState().syncCards(cards, state.catalog);

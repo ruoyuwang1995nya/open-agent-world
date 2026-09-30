@@ -51,6 +51,7 @@ from backend.errors import (
     NotFoundError,
     PermissionDeniedError,
     PluginCompatibilityError,
+    PluginUnavailableError,
     ResourceValidationError,
     RevisionConflictError,
     RuntimeUnavailableError,
@@ -58,6 +59,8 @@ from backend.errors import (
 from backend.events.hub import EventHub
 from backend.events.models import EventType, RuntimeEvent
 from backend.persistence.database import Database
+from backend.idempotency import IdempotencyStore
+from backend.request_context import LOCAL_TENANT, RequestContext
 from backend.legions import (
     LegionBlueprint,
     LegionBounds,
@@ -72,6 +75,7 @@ from backend.legions import (
     LegionTemplateNode,
 )
 from backend.plugins import (
+    PLUGIN_API_VERSION,
     NodeLifecycleContext,
     NodeLifecycleTransaction,
     PluginRegistry,
@@ -734,7 +738,7 @@ class ApplicationServices:
         await self._retry_pending_node_deletions()
         context = self._node_lifecycle_context()
         for card in self.world.list_cards():
-            lifecycle = self.plugins.node_type(card.type).lifecycle
+            lifecycle = self.plugins.node_type(card.type).lifecycle if not card.missing_plugin else None
             if lifecycle is not None:
                 await lifecycle.on_startup(context, card)
         await self.summoning.recover()
@@ -751,12 +755,14 @@ class ApplicationServices:
         await self.sandbox_operations.shutdown()
         context = self._node_lifecycle_context()
         for card in self.world.list_cards():
-            lifecycle = self.plugins.node_type(card.type).lifecycle
+            lifecycle = self.plugins.node_type(card.type).lifecycle if not card.missing_plugin else None
             if lifecycle is not None:
                 await lifecycle.on_shutdown(context, card)
         await self._require_run_manager().shutdown()
 
     def enrich_card(self, card: Card) -> Card:
+        if card.missing_plugin:
+            return card
         record = self.resources.maybe_get_record(card.id)
         if record is None:
             return card
@@ -968,7 +974,7 @@ class ApplicationServices:
                 return (await self.update_cards([CardBatchPatch(node_id=card_id, patch=request)]))[0]
             updated = self.world.preview_update_card(card_id, request)
             self._validate_membership_change(current, updated)
-            lifecycle = self.plugins.node_type(current.type).lifecycle
+            lifecycle = self.plugins.node_type(current.type).lifecycle if not current.missing_plugin else None
             context = self._node_lifecycle_context()
             transaction = (
                 await lifecycle.prepare_update(context, current, updated, request)
@@ -1030,7 +1036,7 @@ class ApplicationServices:
                 current = self.world.get_card(item.node_id)
                 updated = self.world.preview_update_card(item.node_id, item.patch)
                 self._validate_membership_change(current, updated)
-                lifecycle = self.plugins.node_type(current.type).lifecycle
+                lifecycle = self.plugins.node_type(current.type).lifecycle if not current.missing_plugin else None
                 transaction = (
                     await lifecycle.prepare_update(
                         context, current, updated, item.patch
@@ -1110,7 +1116,7 @@ class ApplicationServices:
             context = self._node_lifecycle_context()
             transactions: list[NodeLifecycleTransaction] = []
             for card in cards:
-                lifecycle = self.plugins.node_type(card.type).lifecycle
+                lifecycle = self.plugins.node_type(card.type).lifecycle if not card.missing_plugin else None
                 transactions.append(
                     await lifecycle.prepare_delete(context, card)
                     if lifecycle is not None
@@ -1276,7 +1282,8 @@ class ApplicationServices:
             )
         with self.database.transaction(immediate=True) as connection:
             for sequence, (card, transaction) in enumerate(ordered):
-                plugin_id = self.plugins.node_type_owner_id(card.type)
+                plugin_id = card.missing_plugin.plugin_id if card.missing_plugin else self.plugins.node_type_owner_id(card.type)
+                version, api_version = ("unavailable", PLUGIN_API_VERSION) if card.missing_plugin else plugin_versions[plugin_id]
                 resource = self.resources.maybe_get_record(card.id)
                 edges_json = json.dumps(
                     outgoing_edges.get(card.id, []), separators=(",", ":")
@@ -1294,8 +1301,8 @@ class ApplicationServices:
                         batch_id,
                         sequence,
                         plugin_id,
-                        plugin_versions[plugin_id][0],
-                        plugin_versions[plugin_id][1],
+                        version,
+                        api_version,
                         int(transaction.has_delete_finalizer),
                         json.dumps(
                             dict(transaction.delete_recovery_payload),
@@ -1359,12 +1366,16 @@ class ApplicationServices:
         node_still_exists: bool,
         timeout_seconds: float,
     ) -> NodeLifecycleTransaction:
+        card = Card.model_validate_json(str(row["card_json"]))
+        # A placeholder deletion only changed host-owned rows; there is no
+        # plugin-side commit to compensate, even if its pack is still absent.
+        if card.missing_plugin and not bool(row["requires_finalize"]):
+            return NodeLifecycleTransaction()
         plugin_id = str(row["plugin_id"])
         if not self.plugins.has_plugin(plugin_id):
             raise PluginCompatibilityError(
                 f"pending deletion requires missing plugin {plugin_id!r}"
             )
-        card = Card.model_validate_json(str(row["card_json"]))
         owner_id = self.plugins.node_type_owner_id(card.type)
         if owner_id != plugin_id:
             raise PluginCompatibilityError(
@@ -1378,7 +1389,7 @@ class ApplicationServices:
                     f"pending deletion rollback for {card.id!r} no longer "
                     "matches the live node revision"
                 )
-        lifecycle = self.plugins.node_type(card.type).lifecycle
+        lifecycle = self.plugins.node_type(card.type).lifecycle if not card.missing_plugin else None
         if lifecycle is None:
             if bool(row["requires_finalize"]):
                 raise PluginCompatibilityError(
@@ -1828,6 +1839,7 @@ class ApplicationServices:
                 state_scope=card.state_scope_override,
                 initial_shared_state=shared_states[card.id]["value"] if card.id in shared_states else None,
                 type=card.type,
+                finish=card.finish,
                 plugin_id=self.plugins.node_type_owner_id(card.type),
                 name=card.name,
                 position={"x": card.position.x - min_x, "y": card.position.y - min_y},
@@ -2010,6 +2022,7 @@ class ApplicationServices:
                         parent_id=node_ids.get(node.parent_key) if node.parent_key else (wrapper.id if wrapper and not node.owner_key else None),
                         equipment={"owner_id": node_ids[node.owner_key], "relationship": node.equipment_relationship} if node.owner_key else None,
                         type=node.type,
+                        finish=node.finish,
                         state_scope=node.state_scope,
                         name=node.name,
                         position={
@@ -2152,222 +2165,13 @@ class ApplicationServices:
         )
 
     def _legion_compatibility_issues(self, record: LegionRecord) -> list[str]:
-        if record.blueprint.format_version != 1:
-            return [
-                f"blueprint format {record.blueprint.format_version} is not supported"
-            ]
-        issues: list[str] = []
-        nodes = {node.key: node for node in record.blueprint.nodes}
-        if len(nodes) != len(record.blueprint.nodes):
-            issues.append("blueprint contains duplicate node keys")
-        for node in record.blueprint.nodes:
-            if not self.plugins.has_plugin(node.plugin_id):
-                issues.append(
-                    f"node type {node.type!r} requires missing plugin {node.plugin_id!r}"
-                )
-                continue
-            if not self.plugins.is_enabled(node.plugin_id):
-                issues.append(f"node type {node.type!r} requires disabled plugin {node.plugin_id!r}")
-                continue
-            try:
-                definition = self.plugins.node_type(node.type)
-                owner = self.plugins.node_type_owner_id(node.type)
-            except (GraphValidationError, PluginUnavailableError, ValueError) as error:
-                issues.append(str(error))
-                continue
-            if owner != node.plugin_id:
-                issues.append(
-                    f"node type {node.type!r} is now owned by {owner!r}, not "
-                    f"{node.plugin_id!r}"
-                )
-            if not definition.templateable:
-                issues.append(f"node type {node.type!r} is no longer templateable")
-            if (
-                definition.template_status is not None
-                and node.status != definition.template_status
-            ):
-                issues.append(
-                    f"node type {node.type!r} now requires template status "
-                    f"{definition.template_status!r}, not {node.status!r}"
-                )
-            validated_config = node.config
-            config_is_valid = True
-            try:
-                self.plugins.validate_status(node.type, node.status)
-                validated_config = self.plugins.validate_config(node.type, node.config)
-                if validated_config != node.config:
-                    issues.append(
-                        f"node type {node.type!r} portable configuration is no longer "
-                        "accepted unchanged"
-                    )
-                restored_status = str(
-                    validated_config.get("status", definition.default_status)
-                )
-                if restored_status != node.status:
-                    issues.append(
-                        f"node type {node.type!r} template status {node.status!r} "
-                        f"does not match its portable configuration ({restored_status!r})"
-                    )
-            except GraphValidationError as error:
-                issues.append(str(error))
-                config_is_valid = False
-            if node.initial_document is not None:
-                if definition.document is None:
-                    issues.append(f"node type {node.type!r} no longer provides its document contract")
-                else:
-                    try:
-                        definition.document.model.model_validate(node.initial_document)
-                    except ValueError as error:
-                        issues.append(f"node type {node.type!r} document is incompatible: {error}")
-            handler = definition.template_handler
-            if handler is not None and config_is_valid:
-                try:
-                    declared_dependencies = {
-                        (dependency.kind, dependency.id)
-                        for dependency in self._node_template_dependencies(
-                            handler, validated_config
-                        )
-                    }
-                except PluginCompatibilityError as error:
-                    issues.append(
-                        f"node type {node.type!r} template dependencies are invalid: "
-                        f"{error}"
-                    )
-                    declared_dependencies = set()
-                stored_dependencies = {
-                    (dependency.kind, dependency.id)
-                    for dependency in node.dependencies
-                }
-                for dependency_kind, dependency_id in sorted(
-                    declared_dependencies - stored_dependencies
-                ):
-                    issues.append(
-                        f"node type {node.type!r} requires unrecorded template "
-                        f"dependency {dependency_kind.replace('_', ' ')} "
-                        f"{dependency_id!r}"
-                    )
-            seen_dependencies: set[tuple[str, str]] = set()
-            for dependency in node.dependencies:
-                dependency_key = (dependency.kind, dependency.id)
-                if dependency_key in seen_dependencies:
-                    issues.append(
-                        f"node type {node.type!r} contains duplicate template dependency "
-                        f"{dependency.kind.replace('_', ' ')} {dependency.id!r}"
-                    )
-                    continue
-                seen_dependencies.add(dependency_key)
-                try:
-                    dependency_owner = self.plugins.owner_id(
-                        dependency.kind, dependency.id
-                    )
-                except ValueError:
-                    if not self.plugins.has_plugin(dependency.plugin_id):
-                        issues.append(
-                            f"node type {node.type!r} template dependency "
-                            f"{dependency.kind.replace('_', ' ')} {dependency.id!r} "
-                            f"requires missing plugin {dependency.plugin_id!r}"
-                        )
-                    else:
-                        issues.append(
-                            f"node type {node.type!r} requires missing template "
-                            f"dependency {dependency.kind.replace('_', ' ')} "
-                            f"{dependency.id!r}"
-                        )
-                    continue
-                if dependency_owner != dependency.plugin_id:
-                    issues.append(
-                        f"node type {node.type!r} template dependency "
-                        f"{dependency.kind.replace('_', ' ')} {dependency.id!r} "
-                        f"is now owned by {dependency_owner!r}, not "
-                        f"{dependency.plugin_id!r}"
-                    )
-                elif not self.plugins.is_enabled(dependency.plugin_id):
-                    issues.append(
-                        f"node type {node.type!r} template dependency "
-                        f"{dependency.kind.replace('_', ' ')} {dependency.id!r} "
-                        f"requires unavailable plugin {dependency.plugin_id!r}"
-                    )
-            if node.payload is None and handler is not None:
-                issues.append(
-                    f"node type {node.type!r} now requires template payload that the "
-                    "saved Legion does not contain"
-                )
-            elif node.payload is not None:
-                if handler is None:
-                    issues.append(
-                        f"node type {node.type!r} no longer provides its template handler"
-                    )
-                elif node.payload_version is None or not handler.supports_payload_version(
-                    node.payload_version
-                ):
-                    issues.append(
-                        f"node type {node.type!r} template payload version "
-                        f"{node.payload_version!r} is unsupported"
-                    )
-                else:
-                    try:
-                        handler.validate_payload(node.payload, node.payload_version)
-                    except PluginCompatibilityError as error:
-                        issues.append(
-                            f"node type {node.type!r} template payload is invalid: "
-                            f"{error}"
-                        )
-        for edge in record.blueprint.edges:
-            source = nodes.get(edge.source)
-            target = nodes.get(edge.target)
-            if source is None or target is None:
-                issues.append(f"edge {edge.key!r} references an unknown node")
-                continue
-            if not self.plugins.has_plugin(edge.plugin_id):
-                issues.append(
-                    f"relationship {edge.relationship!r} requires missing plugin "
-                    f"{edge.plugin_id!r}"
-                )
-                continue
-            try:
-                definition = self.plugins.relationship(edge.relationship)
-                owner = self.plugins.relationship_owner_id(edge.relationship)
-                if owner != edge.plugin_id:
-                    issues.append(
-                        f"relationship {edge.relationship!r} is now owned by {owner!r}, "
-                        f"not {edge.plugin_id!r}"
-                    )
-                if not definition.templateable:
-                    issues.append(
-                        f"relationship {edge.relationship!r} is no longer templateable"
-                    )
-                self.plugins.validate_relationship_order(
-                    source.type, target.type, edge.relationship
-                )
-                self.plugins.validate_direction(
-                    edge.relationship, edge.direction.value
-                )
-            except (GraphValidationError, PluginUnavailableError, ValueError) as error:
-                issues.append(str(error))
-        return list(dict.fromkeys(issues))
+        from backend.legions.validation import compatibility_issues
+        return compatibility_issues(record, self.plugins)
 
     @staticmethod
-    def _node_template_dependencies(
-        handler: NodeTemplateHandler, config: Mapping[str, Any]
-    ) -> tuple[NodeTemplateDependency, ...]:
-        dependencies = handler.dependencies(config)
-        if not isinstance(dependencies, tuple):
-            raise PluginCompatibilityError(
-                "template dependencies must be returned as a tuple"
-            )
-        if not all(
-            isinstance(dependency, NodeTemplateDependency)
-            for dependency in dependencies
-        ):
-            raise PluginCompatibilityError(
-                "template dependencies must be NodeTemplateDependency values"
-            )
-        keys = [(dependency.kind, dependency.id) for dependency in dependencies]
-        if len(keys) != len(set(keys)):
-            raise PluginCompatibilityError(
-                "template dependencies must not contain duplicates"
-            )
-        return dependencies
+    def _node_template_dependencies(handler: NodeTemplateHandler, config: Mapping[str, Any]):
+        from backend.legions.validation import template_dependencies
+        return template_dependencies(handler, config)
 
     async def create_edge(
         self, request: EdgeCreate, *, _publish_event: bool = True
@@ -2418,6 +2222,8 @@ class ApplicationServices:
     async def _update_edge_locked(self, edge_id: str, request: EdgePatch) -> Edge:
         old = self.world.get_edge(edge_id)
         self.world.check_revision(old, request.expected_revision)
+        if old.missing_plugin:
+            raise PluginUnavailableError("Restore the missing plugin before editing this connection")
         if (self.plugins.relationship(old.relationship).generated
                 or self.plugins.relationship(request.relationship or old.relationship).generated):
             raise GraphValidationError("Generated connections cannot change relationship")
@@ -2625,17 +2431,49 @@ class ApplicationServices:
         return self.conversations.list_agent_sessions(agent_id)
 
     async def create_conversation_session(
-        self, conversation_id: str, request: ConversationSessionCreate
+        self, conversation_id: str, request: ConversationSessionCreate, *,
+        idempotency_key: str | None = None, request_context: RequestContext | None = None,
     ) -> ConversationSession:
-        self._require_card_type(conversation_id, CardType.CONVERSATION)
+        # This repository still owns one local profile. A new context cannot
+        # select another tenant until repositories actually enforce that scope.
+        if request_context is not None and request_context.tenant != LOCAL_TENANT:
+            raise NotFoundError("Conversation does not exist in this scope")
         participants = list(dict.fromkeys(request.participant_ids))
-        for agent_id in participants:
-            self._require_conversation_connection(agent_id, conversation_id)
-        session = self.conversations.create_session(
-            conversation_id,
-            request.model_copy(update={"participant_ids": participants}),
-        )
-        self.state.ensure_scope("session", session.id, schema_id="core.session")
+
+        def authorize() -> None:
+            self._require_card_type(conversation_id, CardType.CONVERSATION)
+            for agent_id in participants:
+                self._require_conversation_connection(agent_id, conversation_id)
+
+        def mutate() -> dict:
+            session = self.conversations.create_session(
+                conversation_id,
+                request.model_copy(update={"participant_ids": participants}),
+            )
+            self.state.ensure_scope("session", session.id, schema_id="core.session")
+            return session.model_dump(mode="json")
+
+        if idempotency_key is not None:
+            if request_context is None:
+                raise PermissionDeniedError("A trusted request context is required for idempotency")
+            result = IdempotencyStore(self.database).execute(
+                request_context,
+                operation="conversation.session.create.v1",
+                key=idempotency_key,
+                payload={"conversation_id": conversation_id, "request": request.model_dump(mode="json")},
+                authorize=authorize,
+                mutate=mutate,
+            )
+            session = ConversationSession.model_validate(result.value)
+            if result.replayed:
+                return session
+        else:
+            with self.database.transaction(immediate=True):
+                authorize()
+                session = ConversationSession.model_validate(mutate())
+
+        # The mutation and replay result are already committed. Events remain
+        # best-effort: a crash here can lose the notification, never the session.
         await self.events.publish(
             EventType.CONVERSATION_SESSION_CREATED,
             node_id=conversation_id,
@@ -3731,7 +3569,7 @@ class ApplicationServices:
             return sorted(
                 candidate.source
                 for candidate in self.world.list_edges_to(target.id)
-                if any(grant.kind == "sandbox.execute" for grant in self.plugins.relationship(candidate.relationship).capabilities)
+                if not candidate.missing_plugin and any(grant.kind == "sandbox.execute" for grant in self.plugins.relationship(candidate.relationship).capabilities)
             )
         return []
 
@@ -3787,6 +3625,7 @@ class ApplicationServices:
     def _require_agent(self, card_id: str) -> Card:
         self._assert_no_live_pending_deletions()
         card = self.world.get_card(card_id)
+        self.world.require_available_card(card)
         if not self.plugins.has_trait(card.type, "core.agent"):
             raise NotFoundError(f"agent card {card_id!r} does not exist")
         return card
@@ -3794,6 +3633,7 @@ class ApplicationServices:
     def _require_card_type(self, card_id: str, expected: str) -> Card:
         self._assert_no_live_pending_deletions()
         card = self.world.get_card(card_id)
+        self.world.require_available_card(card)
         if card.type != expected:
             raise NotFoundError(f"{expected} card {card_id!r} does not exist")
         return card
@@ -3906,7 +3746,6 @@ def create_services(
         card_library = CardLibraryStore(database, plugin_registry)
         from backend.migrations.barracks import check_legacy
         check_legacy(database)
-        world.assert_plugin_availability()
     except BaseException:
         database.close()
         raise

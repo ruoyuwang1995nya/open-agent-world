@@ -1,4 +1,6 @@
 import { cardStateSession, stateSessionHeaders } from "../state/cardState";
+import { normalizeCardFinish } from '../cards/cardFinish';
+import { fetchWithRetry } from './fetchWithRetry';
 import type { SummoningSnapshot, SummonedInstance } from "../cards/Barracks";
 import type {
   CardConfig,
@@ -47,6 +49,9 @@ export class ApiError extends Error {
     message: string,
     readonly status: number,
     readonly detail?: unknown,
+    readonly requestId?: string,
+    readonly retryable: boolean = false,
+    readonly code?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -132,9 +137,11 @@ export function normalizeCard(input: unknown): WorldCard {
     config.preview_url = resourceContentUrl(String(source.id));
   }
   return {
+    missing_plugin: source.missing_plugin as WorldCard["missing_plugin"],
     state_scope: source.state_scope as WorldCard["state_scope"],
     state_scope_override: source.state_scope_override as WorldCard["state_scope_override"],
     id: String(source.id),
+    finish: normalizeCardFinish(source.finish),
     revision: typeof source.revision === "number" ? source.revision : undefined,
     equipment: source.equipment as WorldCard["equipment"] ?? null,
     minister: source.minister as WorldCard["minister"] ?? null,
@@ -151,7 +158,7 @@ export function normalizeCard(input: unknown): WorldCard {
     },
     expanded: Boolean(source.expanded),
     status: String(config.status ?? source.status ?? (type === "sandbox" ? "stopped" : type === "agent" ? "idle" : "available")) as CardStatus,
-    config: !(["agent", "conversation", "text", "image", "sandbox"].includes(type)) ? { ...asRecord(source.config) } : config,
+    config: source.missing_plugin || !(["agent", "conversation", "text", "image", "sandbox"].includes(type)) ? { ...asRecord(source.config) } : config,
     created_at: typeof source.created_at === "string" ? source.created_at : undefined,
     updated_at: typeof source.updated_at === "string" ? source.updated_at : undefined,
   };
@@ -160,6 +167,7 @@ export function normalizeCard(input: unknown): WorldCard {
 export function normalizeEdge(input: unknown): WorldEdge {
   const source = asRecord(input);
   return {
+    missing_plugin: source.missing_plugin as WorldEdge["missing_plugin"],
     id: String(source.id),
     revision: typeof source.revision === "number" ? source.revision : undefined,
     source: String(source.source ?? source.source_id),
@@ -218,7 +226,10 @@ export function normalizeWorldSnapshot(input: unknown): WorldSnapshot {
   const source = asRecord(input);
   const nodes = (source.nodes ?? []) as unknown[];
   const edges = (source.edges ?? []) as unknown[];
+  const seed = source.terrain_seed;
   return {
+    ...(typeof seed === 'number' && Number.isInteger(seed) && seed >= 0 && seed <= 0xFFFFFFFF
+      ? { terrain_seed: seed } : {}),
     nodes: nodes.map(normalizeCard),
     edges: edges.map(normalizeEdge),
     chunks: Array.isArray(source.chunks) ? (source.chunks as WorldSnapshot["chunks"]) : [],
@@ -231,15 +242,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
   headers.set("Accept", "application/json");
+  // Correlation survives a lost response; it never identifies a user or tenant.
+  if (!headers.has("X-Request-ID")) {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    headers.set("X-Request-ID", Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join(""));
+  }
 
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}${path}`, { ...init, headers });
+    response = await fetchWithRetry(`${API_BASE}${path}`, { ...init, headers });
   } catch (error) {
     throw new ApiError(
       "The world service is not reachable.",
       0,
       error instanceof Error ? error.message : error,
+      headers.get("X-Request-ID") ?? undefined,
     );
   }
 
@@ -248,17 +265,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ? undefined
     : contentType.includes("application/json")
       ? await response.json()
+      : response.ok && contentType.includes("application/vnd.oaw.pack")
+      ? await response.blob()
       : await response.text();
 
   if (!response.ok) {
     if (response.status === 401 && API_BASE !== BUILDER_API_BASE) window.dispatchEvent(new Event('oaw-session-expired'));
     const bodyRecord = asRecord(body);
     const errorRecord = asRecord(bodyRecord.error);
-    const detail = errorRecord.message ?? bodyRecord.detail ?? body;
+    const detail = Array.isArray(bodyRecord.detail)
+      ? bodyRecord.detail
+      : errorRecord.message ?? bodyRecord.detail ?? body;
     throw new ApiError(
       errorMessage(detail, response.status),
       response.status,
       detail,
+      response.headers.get("X-Request-ID") ??
+        (typeof errorRecord.request_id === "string" ? errorRecord.request_id : headers.get("X-Request-ID") ?? undefined),
+      errorRecord.retryable === true,
+      typeof errorRecord.code === "string" ? errorRecord.code : undefined,
     );
   }
   return body as T;
@@ -270,6 +295,15 @@ function unwrap<T>(input: unknown, key: string): T {
 }
 
 export const worldApi = {
+  getDiagnostics(signal?: AbortSignal): Promise<import('../shell/helpChecks').HelpDiagnostics> {
+    return request('/diagnostics', { signal });
+  },
+  inspectContentPack(input: import('../types/packs').CreatorRequest): Promise<import('../types/packs').CreatorInspection> {
+    return request('/packs/creator/inspect', { method: 'POST', headers: { 'X-OAW-Pack-Install': '1' }, body: JSON.stringify(input) });
+  },
+  exportContentPack(input: import('../types/packs').CreatorRequest): Promise<Blob> {
+    return request('/packs/creator/export', { method: 'POST', headers: { 'X-OAW-Pack-Install': '1' }, body: JSON.stringify(input) });
+  },
   getStorePacks(query: string, cursor?: string, signal?: AbortSignal): Promise<import('../types/packs').StorePage> {
     const params = new URLSearchParams({ query, limit: '20' });
     if (cursor) params.set('cursor', cursor);
@@ -347,6 +381,10 @@ export const worldApi = {
 
   async getNodeDocument(id: string, sessionId: string | null = cardStateSession(id) ?? null): Promise<{ value: Record<string, unknown>; revision: number; summary: Record<string, unknown> }> {
     return request(`/nodes/${encodeURIComponent(id)}/document`, { headers: stateSessionHeaders(sessionId) });
+  },
+
+  async getNodeDocumentSummary(id: string, sessionId: string | null = cardStateSession(id) ?? null): Promise<{ revision: number; summary: Record<string, unknown> }> {
+    return request(`/nodes/${encodeURIComponent(id)}/document?summary_only=true`, { headers: stateSessionHeaders(sessionId) });
   },
 
   async nodeResourceAction(id: string, action: string, args: Record<string, unknown>, confirm = false, sessionId: string | null = cardStateSession(id) ?? null): Promise<Record<string, unknown>> {
@@ -434,7 +472,7 @@ export const worldApi = {
     return normalizeLegionInstantiation(body);
   },
 
-  getAgentCapabilities(id: string): Promise<{ capabilities: { id: string; target_name: string; description: string; kind: string }[] }> {
+  getAgentCapabilities(id: string): Promise<{ capabilities: { id: string; target_id?: string; target_name: string; description: string; kind: string }[] }> {
     return request(`/agents/${encodeURIComponent(id)}/capabilities`);
   },
 
@@ -448,7 +486,7 @@ export const worldApi = {
     });
   },
 
-  getAgentInfo(id: string): Promise<{ session_id: string; details?: Record<string, unknown> }> {
+  getAgentInfo(id: string): Promise<{ session_id: string; status?: string; active_run_id?: string | null; last_error?: string | null; details?: Record<string, unknown> }> {
     return request(`/agents/${encodeURIComponent(id)}`);
   },
 
@@ -460,6 +498,7 @@ export const worldApi = {
     const payload = {
       ...("id" in node ? { id: node.id } : {}),
       type: node.type,
+      finish: node.finish,
       parent_id: node.parent_id,
       equipment: node.equipment,
       minister: node.minister,
@@ -507,6 +546,7 @@ export const worldApi = {
       body: JSON.stringify({
         id: node.id,
         type: node.type,
+        finish: node.finish,
         parent_id: node.parent_id,
       equipment: node.equipment,
         name: node.name,
@@ -716,9 +756,11 @@ export const worldApi = {
   createConversationSession(
     conversationId: string,
     input: { title: string; participant_ids: string[]; group_id?: string; group_title?: string },
+    idempotencyKey?: string,
   ): Promise<ConversationSession> {
     return request<ConversationSession>(`/conversations/${encodeURIComponent(conversationId)}/sessions`, {
       method: "POST",
+      ...(idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : {}),
       body: JSON.stringify(input),
     });
   },
@@ -815,6 +857,10 @@ export const worldApi = {
 
   getModelConnections(): Promise<import("../state/modelConnections").ModelCatalog> {
     return request("/settings/models");
+  },
+
+  discoverModels(connection: import("../state/modelConnections").ModelConnection, signal?: AbortSignal): Promise<{ models: { id: string; name: string }[]; truncated: boolean }> {
+    return request("/settings/models/discover", { method: "POST", body: JSON.stringify(connection), signal });
   },
 
   saveModelConnections(settings: import("../state/modelConnections").ModelCatalog): Promise<import("../state/modelConnections").ModelCatalog> {

@@ -1,3 +1,4 @@
+import { isMissingCard } from "./MissingPlugin";
 import { ConnectionDropSurface } from "./ConnectionDropSurface";
 import { t, useLocale } from "../i18n";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
@@ -13,12 +14,14 @@ import { useNodeSurfaceStore } from "../state/nodeSurfaces";
 import "./equipment.css";
 import { ActivityGlow } from "../effects/ActivityGlow";
 import { useNodeActivity } from "../effects/useNodeActivity";
+import { CardFinishLayer } from "./CardFinishLayer";
+import { normalizeCardFinish } from "./cardFinish";
 
 function useToggleEquipment(ownerId: string) {
-  const cards = useWorldStore((state) => state.cards);
   return () => {
     const panel = useEquipmentPanel.getState();
     if (panel.openIds.includes(ownerId)) {
+      const cards = useWorldStore.getState().cards;
       cards.filter((item) => equipmentOwner(item, cards)?.id === ownerId)
         .forEach((item) => useNodeSurfaceStore.getState().dismiss(item.id));
     }
@@ -29,11 +32,16 @@ function useToggleEquipment(ownerId: string) {
 export function EquipmentToggle({ card }: { card: WorldCard }) {
   useLocale();
   const catalog = useWorldStore((s) => s.catalog);
-  const count = useWorldStore((s) => s.cards.filter((item) => item.equipment?.owner_id === card.id).length);
-  const openIds = useEquipmentPanel((state) => state.openIds);
-  const toggle = useToggleEquipment(card.id);
   if (card.ephemeral || !catalog.node_types.find((type) => type.id === card.type)?.traits.includes("core.agent")) return null;
-  return <button className="equipment-toggle nodrag nopan" aria-label={t("Equipment for {v0}", { v0: String(card.name) })} aria-expanded={openIds.includes(card.id)}
+  return <AgentEquipmentToggle card={card} />;
+}
+
+function AgentEquipmentToggle({ card }: { card: WorldCard }) {
+  useLocale();
+  const count = useWorldStore((s) => s.cards.filter((item) => item.equipment?.owner_id === card.id).length);
+  const open = useEquipmentPanel((state) => state.openIds.includes(card.id));
+  const toggle = useToggleEquipment(card.id);
+  return <button className="equipment-toggle nodrag nopan" aria-label={t("Equipment for {v0}", { v0: String(card.name) })} aria-expanded={open}
     title={t("Equipment")} onClick={toggle}><Backpack size={14} /><span>{count}</span></button>;
 }
 
@@ -81,18 +89,19 @@ export function EquipmentCardNode({ data }: NodeProps<CanvasNode>) {
   const onOriginClick = (event: MouseEvent<HTMLDivElement>) => {
     if (origin && !(event.target as HTMLElement).closest(".equipment-item-remove, select")) inspect();
   };
-  return <div className={`equipment-card nodrag nopan ${origin ? "is-open-origin" : ""}`} data-card-id={origin ? undefined : card.id}
+  return <div className={`equipment-card nodrag nopan card-finish-surface ${origin ? "is-open-origin" : ""}`} data-missing={isMissingCard(card, catalog) || undefined} data-card-id={origin ? undefined : card.id} data-finish={normalizeCardFinish(card.finish)}
     data-equipment-origin={origin ? card.id : undefined} data-activity={activity.phase} aria-label={t("{v0} equipment", { v0: String(card.name) })} onClick={onOriginClick}>
     {!origin && <ConnectionDropSurface nodeId={card.id} />}
     <ActivityGlow phase={activity.phase} />
     {!origin && <Handle type="source" position={Position.Left} id="boundary-left" aria-label={t("Connect {v0} left", { v0: String(card.name) })} />}
     <button type="button" className="equipment-item-open" onClick={inspect} title={origin ? t("Hide details") : card.name}
-      aria-label={origin ? t("Hide {v0} details", { v0: String(card.name) }) : card.name} aria-expanded={!!origin}><CatalogIcon definition={definition} size={17} /><span>{card.name}</span></button>
+      aria-label={origin ? t("Hide {v0} details", { v0: String(card.name) }) : card.name} aria-expanded={!!origin}><CatalogIcon definition={definition} size={17} /><span>{isMissingCard(card, catalog) ? `MISSING: ${card.name}` : card.name}</span></button>
     <button className="equipment-item-remove" onClick={unequip} aria-label={t("Unequip {v0}", { v0: String(card.name) })} title={t("Unequip")}><ExternalLink size={12} /></button>
-    {options.length > 1 && <select aria-label={t("{v0} relationship", { v0: String(card.name) })} value={card.equipment?.relationship ?? options[0].value}
+    {!isMissingCard(card, catalog) && options.length > 1 && <select aria-label={t("{v0} relationship", { v0: String(card.name) })} value={card.equipment?.relationship ?? options[0].value}
       onChange={(event) => void update(card.id, { equipment: { owner_id: bindingOwner!.id, relationship: event.target.value } })}>
       {options.map((option) => <option value={option.value} key={option.value}>{t(option.label)}</option>)}
     </select>}
     {!origin && <Handle type="source" position={Position.Right} id="boundary-right" aria-label={t("Connect {v0} right", { v0: String(card.name) })} />}
+    <CardFinishLayer finish={card.finish} quality="thumbnail" />
   </div>;
 }

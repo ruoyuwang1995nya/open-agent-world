@@ -1,3 +1,6 @@
+import { isMissingCard, MissingPlugin } from "./MissingPlugin";
+import { CardLODView } from './CardLODView';
+import { useCardRenderLOD } from '../canvas/useCardRendering';
 import { ConnectionDropSurface } from "./ConnectionDropSurface";
 import { t, useLocale } from "../i18n";
 import { MinisterRoleSettings } from './MinisterRoleCard';
@@ -34,21 +37,12 @@ import { useNodeGeneration } from "../effects/generation";
 import { PluginSurface } from "../plugins/PluginSurface";
 import { CatalogIcon } from "../components/CatalogIcon";
 import { useCollectionHover } from "../state/shadowCollection";
+import { CardFinishLayer } from "./CardFinishLayer";
+import { useCardFinish } from "./useCardFinish";
+import { finishLabel, normalizeCardFinish } from "./cardFinish";
 
 const DRAG_THRESHOLD_PX = 5;
 const NON_DRAG_SELECTOR = "button, input, textarea, select, label, a, summary, [role='button'], [role='separator'], [contenteditable]:not([contenteditable='false']), .nodrag, .react-flow__handle";
-
-// Element boxes include padding and empty line space. Only rendered text should
-// take a mouse gesture away from dragging the surrounding inspector.
-function hitsText(target: Element, x: number, y: number): boolean {
-  const range = document.createRange();
-  return Array.from(target.childNodes).some(node => {
-    if (node.nodeType !== Node.TEXT_NODE || !node.textContent?.trim()) return false;
-    range.selectNodeContents(node);
-    return Array.from(range.getClientRects()).some(rect =>
-      x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom);
-  });
-}
 
 interface BodyProps { card: WorldCard; level: NodeSurfaceLevel }
 
@@ -88,6 +82,7 @@ export function CardContent({ card, level }: BodyProps) {
   const catalog = useWorldStore((s) => s.catalog);
   const definition = catalog.node_types.find((t) => t.id === card.type);
   const ministerTab = useMinisterRole(s => s.settingsCardId === card.id);
+  if (isMissingCard(card, catalog)) return <MissingPlugin card={card} />;
   const Body = definition?.traits.includes("ui.agent-barracks.v1") ? BarracksBody : definition?.traits.includes("ui.skill.v1") ? SkillNodeBody : definition?.traits.includes("ui.skill-package.v1") ? SkillToolboxBody : definition?.traits.includes("ui.task-board.v1") ? TaskBoardBody : definition?.traits.includes("core.agent") ? AgentCardBody : BODIES[card.type] ?? GenericCardBody;
   return <>{card.minister && <nav className="agent-window-tabs nodrag nopan" role="tablist" aria-label={t('Agent card')}>
     <button type="button" role="tab" aria-selected={!ministerTab} onClick={() => useMinisterRole.setState({ settingsCardId: undefined })}>{t('Settings')}</button>
@@ -108,7 +103,7 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
   const activity = useNodeActivity(card);
   const generation = useNodeGeneration(card.id);
   const generationPhase = generation?.targetId === card.id ? generation.phase : undefined;
-  const displayStatus = activity.phase === "idle" ? card.status : activity.phase;
+  const displayStatus = card.missing_plugin ? "unavailable" : activity.phase === "idle" ? card.status : activity.phase;
   const catalog = useWorldStore((state) => state.catalog);
   const level = useNodeSurfaceStore((state) => surfaceLevelForNode(card.id, state.surfaceLevels));
   const showPreview = useNodeSurfaceStore((state) => state.showPreview);
@@ -123,11 +118,17 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
   const [ministerNodeHovered, setMinisterNodeHovered] = useState(false);
   const pointerStart = useRef<{ x: number; y: number; moved: boolean }>();
   const visualLevel = level;
+  const finishQuality = visualLevel === "preview" ? "standard" : "thumbnail";
+  const material = useCardFinish(card.finish, finishQuality);
   // Preview cards do not need editors, plugin bodies or their subscriptions.
-  // Once visited, retain the body on collapse so local unsaved drafts survive.
+  // Unknown plugin bodies may still own local drafts. Host editors retain drafts
+  // outside their mounts, so their hidden DOM and subscriptions can be released.
   const [inspectorVisited, setInspectorVisited] = useState(level === 'inspector');
   useEffect(() => { if (level === 'inspector') setInspectorVisited(true); }, [level]);
   const definition = catalog.node_types.find((item) => item.id === card.type);
+  const hostInspector = !definition?.frontend?.body && (['text', 'conversation', 'sandbox', 'image'].includes(card.type)
+    || definition?.traits.includes('ui.task-board.v1'));
+  const retainedInspector = !hostInspector && !card.type.startsWith('xrd.');
   const label = t(definition?.label ?? card.type);
   const eligible = canAppointMinister(card, catalog);
   const roleDrag = useEquipmentDrag(s => s.resource?.type === MINISTER_ROLE_CARD);
@@ -147,6 +148,7 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
   }, [card.id, connectingNodeId]);
 
   const onPointerMove = (event: ReactPointerEvent<HTMLElement>) => {
+    material.onPointerMove?.(event);
     if (card.ephemeral || connectingNodeId === card.id) return;
     updateConnectionHoverHint(event, cardRef.current);
   };
@@ -159,14 +161,17 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
   return (<>
     <article
       ref={cardRef}
-      className={`world-card node-surface world-card--${card.type} is-${visualLevel} ${selected ? "is-selected" : ""} ${card.status === "running" ? "is-running" : ""} ${card.status === "error" ? "is-error" : ""} ${card.ephemeral ? "is-ephemeral" : ""}`}
+      className={`world-card node-surface card-finish-surface world-card--${card.type} is-${visualLevel} ${selected ? "is-selected" : ""} ${card.status === "running" ? "is-running" : ""} ${card.status === "error" ? "is-error" : ""} ${card.ephemeral ? "is-ephemeral" : ""}`}
       style={{ "--card-kind": definition?.color, borderRadius: NODE_SURFACE_RADIUS[visualLevel] } as CSSProperties}
       aria-label={`${label} ${card.name}`}
+      data-missing={isMissingCard(card, catalog) || undefined}
       data-card-id={card.id}
       data-card-revision={card.revision}
       data-card-type={card.type}
+      data-finish={normalizeCardFinish(card.finish)}
       data-card-expanded={visualLevel === "inspector" || visualLevel === "workspace" ? "true" : "false"}
       data-surface-level={level}
+      data-render-lod="full"
       data-activity={activity.phase}
       data-equipment-detail={data.equipmentDetail || undefined}
       data-generation={generationPhase}
@@ -174,8 +179,9 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
       data-minister={Boolean(card.minister) || undefined}
       data-minister-eligible={eligible && roleDrag || undefined}
       data-promotion={promotion ? 'appointing' : undefined}
-      onPointerEnter={() => { if (card.minister && level === 'node') setMinisterNodeHovered(true); }}
-      onPointerLeave={() => { setMinisterNodeHovered(false); clearConnectionHoverHint(cardRef.current); }}
+      onPointerEnter={event => { material.onPointerEnter?.(event); if (card.minister && level === 'node') setMinisterNodeHovered(true); }}
+      onPointerLeave={() => { material.onPointerLeave?.(); setMinisterNodeHovered(false); clearConnectionHoverHint(cardRef.current); }}
+      onPointerCancel={material.onPointerCancel}
       onPointerMoveCapture={(event) => {
         const start = pointerStart.current;
         if (start && event.buttons && Math.hypot(event.clientX - start.x, event.clientY - start.y) >= DRAG_THRESHOLD_PX) start.moved = true;
@@ -187,21 +193,10 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
         if ((event.target as Element).closest(NON_DRAG_SELECTOR)) event.stopPropagation();
       }}
       onMouseDownCapture={event => {
-        const target = event.target as Element;
-        // React Flow's native drag listener runs before React's bubble handlers.
-        // Classify the gesture during capture so its nodrag filter can reject it,
-        // while still delivering the event to child controls and React handlers.
+        // Isolate controls before React Flow's native drag listener runs.
         const boundary = event.currentTarget;
         boundary.classList.remove("nodrag");
-        const control = Boolean(target.closest(NON_DRAG_SELECTOR));
-        const inspectorContent = visualLevel === "inspector"
-          && Boolean(target.closest(".node-inspector-content, .node-inspector-footer"));
-        const selectingText = !control && inspectorContent && hitsText(target, event.clientX, event.clientY);
-        boundary.classList.toggle("nodrag", control || selectingText);
-        if (!control && inspectorContent && !selectingText) {
-          event.preventDefault();
-          window.getSelection()?.removeAllRanges();
-        }
+        boundary.classList.toggle("nodrag", Boolean((event.target as Element).closest(NON_DRAG_SELECTOR)));
       }}
       onClick={(event) => {
         const start = pointerStart.current;
@@ -228,10 +223,10 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
 
       {visualLevel !== "inspector" && <EquipmentToggle card={card} />}
       {visualLevel === "workspace" ? <WorkspaceSurface card={card} /> : <>
-        <header className="card-header node-surface-header">
+        <header className={`card-header node-surface-header node-drag-region ${visualLevel === "inspector" ? "card-finish-surface" : ""}`}>
           <div className="card-kind-icon" aria-hidden="true"><CatalogIcon definition={definition} size={18} /></div>
           <div className="card-title-group">
-            <span className="card-eyebrow">{label}</span>
+            <span className="card-eyebrow">{isMissingCard(card, catalog) ? `MISSING · ${card.type}` : label}</span>
             <CardName key={`${card.id}:${visualLevel}`} card={card} label={label} editable={visualLevel !== "node"} />
           </div>
           <div className="card-status" data-status={displayStatus} title={`${t('Status')}: ${t(statusLabel(displayStatus))}`}>
@@ -250,26 +245,28 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
                 else hidePreview(card.id);
               }} />
           ) : null}
-          {canCollapseInspector && <IconButton icon={X} size="sm" quiet className="node-surface-close"
+          {visualLevel === 'inspector' && canCollapseInspector && <IconButton icon={X} size="sm" quiet className="node-surface-close"
             onClick={() => closeInspector(card.id)} label={t("Close {v0} inspector", { v0: String(card.name) })} />}
+          {visualLevel === 'inspector' && <CardFinishLayer finish={card.finish} quality="thumbnail" />}
         </header>
 
         <div className="node-preview-content" aria-hidden={visualLevel !== "preview"}>
-          <div className="node-preview-body"><NodePreview card={card} /></div>
+          {visualLevel === 'preview' && <div className="node-preview-body"><NodePreview card={card} /></div>}
           {presentation.open !== "preview" && <span className="node-preview-hint">{t(presentation.open === "workspace" ? "Open workspace" : "Click for details")}</span>}
         </div>
 
-        <div className="card-body node-inspector-content" aria-hidden={visualLevel !== "inspector"}>
-          {(visualLevel === 'inspector' || inspectorVisited) && <CardContent card={card} level={level} />}
+        <div className="card-body node-inspector-content nodrag nopan" aria-hidden={visualLevel !== "inspector"}>
+          {(visualLevel === 'inspector' || (inspectorVisited && retainedInspector)) && <CardContent card={card} level={level} />}
         </div>
 
-        <footer className="card-footer node-inspector-footer">
+        {visualLevel === 'inspector' && <footer className="card-footer node-inspector-footer nodrag nopan">
           {definition?.traits.includes("core.agent") && !card.ephemeral ? <EquipmentToggle card={card} />
             : <span className="card-id">{card.ephemeral ? "synthetic" : card.id.slice(0, 8)}</span>}
+          {!card.ephemeral && <small className="card-finish-metadata">{t("Finish")}: {t(finishLabel(card.finish))}</small>}
           <div className="card-footer-actions">
             {!card.ephemeral ? <IconButton icon={Trash2} danger
               onClick={() => { dismissSurface(card.id); void deleteCard(card.id); }} label={t("Remove {v0}", { v0: String(card.name) })}
-              title={t("Remove object (Ctrl+Z to undo)")} /> : null}
+              title={card.missing_plugin ? t("Remove") : t("Remove object (Ctrl+Z to undo)")} /> : null}
             {support.workspace ? (
               <button type="button" className="card-expand-button" aria-label={definition?.traits.includes("library.readable") ? t("打开阅读器") : t("Open workspace")} title={definition?.traits.includes("library.readable") ? t("打开阅读器") : t("Open workspace")} onClick={() => {
                 if (definition?.traits.includes("library.readable")) cardRef.current?.dispatchEvent(new Event("oaw:expand-reader"));
@@ -279,10 +276,11 @@ const WorldCardNodeComponent = memo(function WorldCardNodeComponent({ data, sele
               </button>
             ) : null}
           </div>
-        </footer>
+        </footer>}
       </>}
+      {(visualLevel === "node" || visualLevel === "preview") && <CardFinishLayer finish={card.finish} quality={finishQuality} />}
     </article>
-    {card.minister && <MinisterAgent card={card} nodeHovered={ministerNodeHovered && level === 'node'} />}
+    {card.minister && !isMissingCard(card, catalog) && <MinisterAgent card={card} nodeHovered={ministerNodeHovered && level === 'node'} />}
   </>);
 });
 
@@ -303,4 +301,53 @@ function CollectionAwareCard(props: NodeProps<CanvasNode>) {
   return props.data.collectionOwner ? <StackedCard {...props} />
     : <WorldCardNodeComponent data={props.data} selected={props.selected} dragging={props.dragging} />;
 }
-export const WorldCardNode = memo(CollectionAwareCard);
+export const WorldCardNode = memo(function WorldCardNode(props: NodeProps<CanvasNode>) {
+  const lod = useCardRenderLOD(props.id, props.data.renderLOD);
+  const start = useRef<{ x: number; y: number; level: NodeSurfaceLevel; light: boolean; moved: boolean }>();
+  const activated = useRef(false);
+  if (lod === 'offscreen') return null;
+  const light = lod !== 'full' && !props.data.collectionOwner;
+  // Keep the common click ancestor mounted when selection on mouse-down
+  // replaces the proxy. Hydration is immediate, including during a held press.
+  return <div className="card-render-boundary"
+    data-static-workspace={light && lod === 'mid' && props.data.card.type === 'sandbox'
+      && (props.data.surfaceLevel === 'workspace' || props.data.surfaceLevel === 'inspector') || undefined}
+    onPointerDownCapture={event => {
+      activated.current = false;
+      const ownsPress = light && event.button === 0 && !(event.target as Element).closest(NON_DRAG_SELECTOR);
+      start.current = { x: event.clientX, y: event.clientY, level: props.data.surfaceLevel, light: ownsPress, moved: false };
+      // Native click is otherwise cancelled when its pointer-down target is
+      // removed. Capture on the stable boundary, never on the replaceable view.
+      if (ownsPress) event.currentTarget.setPointerCapture(event.pointerId);
+    }}
+    onPointerMoveCapture={event => { if (start.current && event.buttons && Math.hypot(event.clientX - start.current.x, event.clientY - start.current.y) >= DRAG_THRESHOLD_PX) start.current.moved = true; }}
+    onPointerCancel={() => { start.current = undefined; }}
+    onLostPointerCapture={() => { start.current = undefined; }}
+    onPointerUp={event => {
+      const press = start.current;
+      // The browser may cancel the compatibility click when its original DOM
+      // target was replaced. Finish only this owned, unmoved primary press.
+      if (!press?.light || press.moved || event.button !== 0
+        || Math.hypot(event.clientX - press.x, event.clientY - press.y) >= DRAG_THRESHOLD_PX
+        || props.dragging || useNodeSurfaceStore.getState().dragging) { start.current = undefined; return; }
+      // Deliver the one cancelled compatibility click through the original
+      // React Flow ancestor as well, preserving selection and modifier keys.
+      event.currentTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window,
+        detail: 1, clientX: event.clientX, clientY: event.clientY,
+        shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey }));
+      activated.current = true; start.current = undefined;
+    }}
+    onClick={event => {
+      const press = start.current;
+      if (event.target !== event.currentTarget || !press?.light || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+      const surfaces = useNodeSurfaceStore.getState();
+      if (!surfaces.connectingNodeId && !surfaces.dragging && (press.level === 'node' || press.level === 'preview')) {
+        surfaces.openPrimary(props.id);
+      }
+    }}
+    onClickCapture={event => {
+      if (activated.current && event.detail !== 0) { activated.current = false; event.preventDefault(); event.stopPropagation(); }
+    }}>
+    {light ? <CardLODView {...props} data={{ ...props.data, renderLOD: lod }} /> : <CollectionAwareCard {...props} />}
+  </div>;
+});

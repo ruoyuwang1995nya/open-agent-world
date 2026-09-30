@@ -13,7 +13,7 @@ test('six compact controls keep their order and switch the open settings without
   const actions = page.locator('.top-actions > button');
   await expect(actions).toHaveCount(6);
   await expect(actions.first()).toHaveAccessibleName('Open Pack and Card Library');
-  await expect(actions.last()).toHaveAccessibleName('Replay Tutorial');
+  await expect(actions.last()).toHaveAccessibleName('Help');
   for (const width of [1280, 800, 390]) {
     await page.setViewportSize({ width, height: 800 });
     const boxes = await actions.evaluateAll(buttons => buttons.map(button => {
@@ -27,7 +27,7 @@ test('six compact controls keep their order and switch the open settings without
   await page.getByRole('button', { name: '切换到中文', exact: true }).click();
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
   await expect(actions.first()).toHaveAccessibleName('打开卡包与卡片图书馆');
-  await expect(actions.last()).toHaveAccessibleName('重播教程');
+  await expect(actions.last()).toHaveAccessibleName('帮助');
   await page.screenshot({ path: 'test-results/i18n-hud-zh-light.png' });
   await page.getByRole('button', { name: '使用深色主题', exact: true }).click();
   await page.screenshot({ path: 'test-results/i18n-hud-zh-dark.png' });
@@ -45,8 +45,18 @@ test('six compact controls keep their order and switch the open settings without
   await page.getByRole('button', { name: 'Close Library', exact: true }).click();
 });
 
-test('terrain remains visible at both zoom limits in both themes', async ({ page }) => {
+test('WebGL terrain remains visible at both zoom limits in both themes', async ({ page, request }) => {
+  test.setTimeout(60_000);
+  const profile = await (await request.get('/api/application')).json();
+  await request.patch('/api/application/preferences', { data: {
+    profile_id: profile.profile_id, generation: profile.generation, changes: {
+      'oaw.locale': 'en', 'oaw-theme': 'light',
+      'oaw-onboarding-v1': JSON.stringify({ version: 1, state: { status: 'skipped' } }),
+      'oaw-canvas-viewport-v1': null,
+    },
+  } });
   await page.goto('/');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   for (const theme of ['light', 'dark']) {
     if (await page.locator('html').getAttribute('data-theme') !== theme) {
       await page.getByRole('button', { name: `Use ${theme} theme`, exact: true }).click();
@@ -56,19 +66,14 @@ test('terrain remains visible at both zoom limits in both themes', async ({ page
       const control = page.getByRole('button', { name: zoom === .12 ? 'Zoom out' : 'Zoom in', exact: true });
       for (let i = 0; i < 30 && await control.isEnabled(); i++) await control.click();
       await expect(control).toBeDisabled();
-      const paths = page.locator('.contour-chunk path');
-      await expect(paths.first()).toBeAttached();
-      await expect.poll(() => paths.first().evaluate(path => (path as SVGGraphicsElement).getScreenCTM()!.a)).toBeCloseTo(zoom, 2);
-      const styles = await paths.evaluateAll(paths => paths.map(path => {
-        const style = getComputedStyle(path);
-        return { width: parseFloat(style.strokeWidth) * (path as SVGGraphicsElement).getScreenCTM()!.a, opacity: Number(style.opacity), stroke: style.stroke };
-      }));
-      expect(styles.every(style => style.width >= 1.14 && style.width <= 1.66 && style.opacity >= .72)).toBe(true);
-      const grid = page.locator('#oaw-world-map > .react-flow__background');
-      await expect(grid.locator('circle')).toHaveAttribute('r', '1');
-      const gap = Number(await grid.locator('pattern').getAttribute('width'));
-      expect(gap).toBeGreaterThanOrEqual(18);
-      expect(gap).toBeLessThanOrEqual(53);
+      const background = page.locator('.terrain-webgl-background');
+      await expect(background).toHaveAttribute('data-terrain-status', 'ready');
+      await expect.poll(() => page.locator('#oaw-world-map .react-flow__viewport').evaluate(el =>
+        new DOMMatrix(getComputedStyle(el).transform).a)).toBeCloseTo(zoom, 2);
+      await expect.poll(() => background.evaluate(el => {
+        const s = (el as any).terrainStats;
+        return s.visibleTiles > 0 && s.coveredTiles === s.visibleTiles && s.pendingTiles === 0;
+      })).toBe(true);
       await page.screenshot({ path: `test-results/terrain-${theme}-${zoom}.png` });
     }
   }

@@ -5,6 +5,7 @@ from enum import StrEnum
 from typing import Any, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from backend.card_finishes import CardFinish
 from backend.legion_workspace import WorkspaceLayout
 
 
@@ -193,6 +194,7 @@ class CardCreate(BaseModel):
     equipment: EquipmentBinding | None = None
     minister: MinisterRole | None = None
     type: str = Field(min_length=1, max_length=128)
+    finish: CardFinish = "normal"
     name: str | None = Field(default=None, min_length=1, max_length=200)
     position: Point = Field(default_factory=Point)
     size: Size | None = None
@@ -259,14 +261,22 @@ class CardsUpdate(BaseModel):
         return value
 
 
+class MissingPlugin(BaseModel):
+    """Read-time diagnostic; never replaces persisted plugin identity or data."""
+    plugin_id: str
+    reason: Literal["plugin_missing", "plugin_disabled", "type_missing", "owner_mismatch", "endpoint_missing"]
+
+
 class Card(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    missing_plugin: MissingPlugin | None = None
     parent_id: str | None = None
     equipment: EquipmentBinding | None = None
     minister: MinisterRole | None = None
     type: str
+    finish: CardFinish = "normal"
     name: str
     position: Point
     size: Size
@@ -311,6 +321,7 @@ class Edge(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    missing_plugin: MissingPlugin | None = None
     source: str
     target: str
     relationship: str

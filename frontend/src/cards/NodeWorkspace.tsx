@@ -1,3 +1,4 @@
+import { isMissingCard, MissingPlugin } from "./MissingPlugin";
 import { useWorkspaceAccess } from '../workspace/WorkspaceAccess';
 import { t, useLocale } from "../i18n";
 import { SandboxWorkspace } from "./SandboxWorkspace";
@@ -17,7 +18,7 @@ import { useEffect, useMemo, useState } from "react";
 import { apiErrorMessage, worldApi } from "../api/client";
 import { CardName } from "./CardName";
 import { IconButton } from "../components/IconButton";
-import { collapsedSurface, nodePresentation, useNodeSurfaceStore } from "../state/nodeSurfaces";
+import { collapsedSurface, nodePresentation, useNodeSurfaceStore, useSurfaceDraft, surfaceDraftKey } from "../state/nodeSurfaces";
 import { useWorldStore } from "../state/worldStore";
 import { useConversationView } from "../state/conversationView";
 import type { ConversationSession, WorldCard } from "../types/world";
@@ -28,8 +29,11 @@ import { ConversationWorkspace } from "./ConversationWorkspace";
 import { MinisterRoleSettings } from './MinisterRoleCard';
 import { openMinisterSettings, useMinisterRole } from '../state/ministerRole';
 import { AgentCardBody } from "./AgentCard";
+import { modelLabel } from "./modelLabel";
 import { PluginSurface } from "../plugins/PluginSurface";
 import { CatalogIcon } from "../components/CatalogIcon";
+import { CardFinishLayer } from "./CardFinishLayer";
+import { normalizeCardFinish } from "./cardFinish";
 
 interface WorkspaceSurfaceProps {
   card: WorldCard;
@@ -44,29 +48,31 @@ function WorkspaceTitlebar({ card }: WorkspaceSurfaceProps) {
   const canCollapse = collapsedSurface(nodePresentation(card.type, catalog), "workspace", base) !== "workspace";
 
   return (
-    <header className="workspace-titlebar node-drag-region">
+    <header className="workspace-titlebar node-drag-region card-finish-surface" data-finish={normalizeCardFinish(card.finish)}>
       <div className="workspace-app-mark"><CatalogIcon definition={catalog.node_types.find((d) => d.id === card.type)} size={16} /></div>
       <div>
-        <span>{catalog.node_types.find((item) => item.id === card.type)?.label ?? card.type} {t("workspace")}</span>
+        <span>{card.type === "xrd.match" ? "XRD 谱解析" : (catalog.node_types.find((item) => item.id === card.type)?.label ?? card.type)} {t("workspace")}</span>
         <CardName card={card} workspace label={catalog.node_types.find(item => item.id === card.type)?.label ?? card.type} />
       </div>
       <div className="workspace-window-actions">
         {!card.ephemeral && <IconButton icon={Trash2} size="sm" quiet danger onClick={() => { void deleteCard(card.id); }}
-          label={t("Remove {v0}", { v0: String(card.name) })} title={t("Remove object (Ctrl+Z to undo)")} />}
+          label={t("Remove {v0}", { v0: String(card.name) })} title={card.missing_plugin ? t("Remove") : t("Remove object (Ctrl+Z to undo)")} />}
         {canCollapse && <IconButton icon={X} size="sm" quiet onClick={() => closeWorkspace(card.id)} label={t("Close workspace")} />}
       </div>
+      <CardFinishLayer finish={card.finish} quality="thumbnail" />
     </header>
   );
 }
 
 function AgentWorkspace({ card }: { card: WorldCard }) {
   useLocale();
+  const modelCatalog = useWorldStore(state => state.modelCatalog);
   const catalog = useWorldStore((state) => state.catalog);
   const edges = useWorldStore((state) => state.edges);
   const cards = useWorldStore((state) => state.cards);
   const allEvents = useWorldStore((state) => state.events);
   const [sessions, setSessions] = useState<ConversationSession[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string>();
+  const [activeSessionId, setActiveSessionId] = useSurfaceDraft<string | undefined>(surfaceDraftKey(card.id, 'agent-history-session'), undefined);
   const [historyError, setHistoryError] = useState<string>();
   const events = useMemo(() => allEvents.filter((event) => (
     event.agent_id === card.id
@@ -117,7 +123,7 @@ function AgentWorkspace({ card }: { card: WorldCard }) {
         </div>
         <div className="workspace-agent-state">
           <span data-status={card.status} />
-          <div><strong>{card.status}</strong><small>{String(card.config.model ?? t("Default model"))}</small></div>
+          <div><strong>{card.status}</strong><small>{modelLabel(modelCatalog, card.config.model)}</small></div>
         </div>
       </nav>
 
@@ -178,7 +184,7 @@ function AgentWorkspace({ card }: { card: WorldCard }) {
 
 export function WorkspaceSurface({ card }: WorkspaceSurfaceProps) {
   useLocale();
-  return <section className="node-workspace-window" role="dialog" aria-modal="false" aria-label={t("{v0} workspace", { v0: String(card.name) })} data-workspace-node-id={card.id}>
+  return <section data-missing={Boolean(card.missing_plugin) || undefined} className="node-workspace-window" role="dialog" aria-modal="false" aria-label={t("{v0} workspace", { v0: String(card.name) })} data-workspace-node-id={card.id}>
     <WorkspaceTitlebar card={card} />
     <WorkspaceContent card={card} />
   </section>;
@@ -189,12 +195,13 @@ export function WorkspaceContent({ card }: WorkspaceSurfaceProps) {
   useLocale();
   const catalog = useWorldStore((state) => state.catalog);
   const { deployed } = useWorkspaceAccess();
-  const [agentTab, setAgentTab] = useState("activity");
+  const [agentTab, setAgentTab] = useSurfaceDraft(surfaceDraftKey(card.id, 'agent-tab'), 'activity');
   const ministerTab = useMinisterRole(s => s.settingsCardId === card.id) && Boolean(card.minister);
+  if (isMissingCard(card, catalog)) return <div className="workspace-content"><MissingPlugin card={card} /></div>;
   return (
       <div className="workspace-content">
       <PluginSurface card={card} slot="workspace" level="workspace">
-      {catalog.node_types.find((definition) => definition.id === card.type)?.traits.includes("core.agent") ? deployed ? <div className="workspace-welcome"><Bot size={22} /><strong>{card.name}</strong><p>{t(card.status)}</p></div> : <>
+      {card.type === "xrd.match" ? <div className="agent-window-body"><div className="agent-settings-window nodrag nopan nowheel"><AgentCardBody card={card} level="workspace" /></div></div> : catalog.node_types.find((definition) => definition.id === card.type)?.traits.includes("core.agent") ? deployed ? <div className="workspace-welcome"><Bot size={22} /><strong>{card.name}</strong><p>{t(card.status)}</p></div> : <>
         <nav className="agent-window-tabs nodrag nopan" role="tablist" aria-label={t("Agent window")}>
           <button role="tab" aria-selected={!ministerTab && agentTab === "activity"} onClick={() => { useMinisterRole.setState({ settingsCardId: undefined }); setAgentTab("activity"); }}>{t("Activity")}</button>
           <button role="tab" aria-selected={!ministerTab && agentTab === "settings"} onClick={() => { useMinisterRole.setState({ settingsCardId: undefined }); setAgentTab("settings"); }}>{t("Settings")}</button>

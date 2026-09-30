@@ -2,7 +2,9 @@
 
 OAW's user model is **Pack → Card Library → Deck → World**. The Store tab remains
 a placeholder for a future online catalog. A `.oawpack` is the supported local
-installation unit for a third-party Pack, including its backend and frontend.
+installation unit for a third-party Pack. Code Packs include their backend and
+frontend; [content Packs](creator-packs.md) carry portable Legion templates and
+reference their required Packs without bundling executable plugins.
 
 `PluginRegistry`, `PluginDescriptor`, `FrontendPlugin` and runtime owner are
 internal implementation concepts. Installed and bundled Packs use the existing
@@ -10,7 +12,7 @@ registry, collection, enable/disable controls, lifecycle checks and deck storage
 Bundled plugins may still own several Packs. An external distribution owns
 exactly one Pack, with the same ID as its runtime owner.
 
-## Version 1 archive
+## Version 1 code archive
 
 A `.oawpack` is a ZIP with these files at the archive root (no wrapper directory):
 
@@ -174,7 +176,19 @@ preference; enable the Pack in the Library when you want to use it again.
 Identity digests remain after file removal: the same ID/version can be restored
 only with its original content. A changed artifact needs a new version.
 
-If a selected backend prevents startup, stop OAW and use the host interpreter:
+Persisted cards and connections whose plugin is absent, disabled, no longer
+provides their type, or no longer matches their recorded owner load as **MISSING**
+placeholders. The canvas shows a black and purple pattern and retains their
+original identifiers, configuration, layout, and connections. Missing cards can
+be moved, renamed, resized, detached, or deleted; unavailable connections can be
+deleted. Their lifecycle callbacks and connection grants remain inactive.
+Restoring the matching plugin and restarting makes retained objects usable again.
+Deleting missing objects currently clears canvas undo history because restoring
+them requires their plugin implementation.
+
+This recovery applies to unavailable persisted types. If an installed backend
+itself throws during import or registration and prevents startup, stop OAW and
+use the host interpreter:
 
 ```sh
 python -m open_agent_world.pack activate --data-root /path/to/oaw-data example.greeter 0.1.0

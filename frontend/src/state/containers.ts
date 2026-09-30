@@ -4,7 +4,7 @@ import { surfaceSizeFor, type NodeSurfaceLevel, type SurfaceSizes } from "./node
 import { nodePositionFromSurfacePosition, positionSurfaceAtNodeCenter } from "../canvas/nodeDisplacement";
 import { isShadow, shadowLayout, insideShadow } from "./shadowCollection";
 
-export const containerDefinition = (card: WorldCard, catalog: PluginCatalog) => catalog.node_types.find((type) => type.id === card.type)?.container;
+export const containerDefinition = (card: WorldCard, catalog: PluginCatalog) => card.missing_plugin ? undefined : catalog.node_types.find((type) => type.id === card.type)?.container;
 export const isContainer = (card: WorldCard, catalog: PluginCatalog) => containerDefinition(card, catalog) != null;
 
 export function containerShowsWorkspace(card: WorldCard, catalog: PluginCatalog, level?: NodeSurfaceLevel) {
@@ -49,7 +49,11 @@ export function containerContentBounds(cards: WorldCard[], catalog: PluginCatalo
 export function memberSurfacePosition(card: WorldCard, parent: WorldCard, level: NodeSurfaceLevel, catalog: PluginCatalog) {
   const position = positionSurfaceAtNodeCenter(card.position, level);
   if(isShadow(parent)) return position;
-  const [left, top] = containerDefinition(parent, catalog)!.content_inset;
+  // A WebSocket refresh can deliver members before the startup catalog read.
+  // Keep their saved placement until the container's layout becomes available.
+  const definition = containerDefinition(parent, catalog);
+  if (!definition) return position;
+  const [left, top] = definition.content_inset;
   return { x: Math.max(position.x, parent.position.x + left), y: Math.max(position.y, parent.position.y + top) };
 }
 export function descendants(cards: WorldCard[], id: string): WorldCard[] {

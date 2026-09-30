@@ -1,4 +1,5 @@
 import { createPortal } from 'react-dom';
+import { useMotionPresence } from './useMotionPresence';
 import { reportInteraction } from "../state/interactions";
 import { t, useLocale } from "../i18n";
 import { Box, Cpu, HardDrive, Settings2, X } from "lucide-react";
@@ -7,6 +8,8 @@ import type { FormEvent } from "react";
 import { useWorldStore } from "../state/worldStore";
 import { EMPTY_MODEL_CATALOG, importLegacyModels, type ModelCatalog } from "../state/modelConnections";
 import { ModelConnectionsEditor } from "./ModelConnectionsEditor";
+import { ConnectAI } from './ConnectAI';
+import { useTutorialStore } from '../onboarding/controller';
 import { worldApi } from "../api/client";
 import type { SandboxSettings, StorageSettings } from "../api/client";
 import type { SandboxRuntime } from "../types/world";
@@ -17,6 +20,7 @@ import { EnvironmentVariablesEditor, environmentVariablesFromValue, environmentV
 export function SettingsPanel() {
   const { locale, setLocale } = useLocale();
   const open = useWorldStore((state) => state.settingsOpen);
+  const presence = useMotionPresence(open);
   const settings = useWorldStore((state) => state.modelSettings);
   const setOpen = useWorldStore((state) => state.toggleSettings);
   const [draft, setDraft] = useState<ModelCatalog>(EMPTY_MODEL_CATALOG);
@@ -24,6 +28,7 @@ export function SettingsPanel() {
   const [modelLoaded, setModelLoaded] = useState(false);
   const [modelError, setModelError] = useState("");
   const [modelRetry, setModelRetry] = useState(0);
+  const [simpleSetup, setSimpleSetup] = useState(false);
   const [section, setSection] = useState<"model" | "sandbox" | "storage" | "deepl">("model");
   const [storage, setStorage] = useState<StorageSettings | null>(null);
   const [storagePath, setStoragePath] = useState("");
@@ -51,7 +56,11 @@ export function SettingsPanel() {
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
-    if (!open) { setDraft(EMPTY_MODEL_CATALOG); return; }
+    if (!presence.present) setDraft(EMPTY_MODEL_CATALOG);
+  }, [presence.present]);
+
+  useEffect(() => {
+    if (!open) return;
     setModelLoaded(false);
     setModelError("");
     let active = true;
@@ -60,6 +69,7 @@ export function SettingsPanel() {
         if (!active) return;
         setSavedCatalog(value);
         setDraft(importLegacyModels(value, settings));
+        setSimpleSetup(!value.connections.length && !settings.models.length && useTutorialStore.getState().view !== 'active');
         useWorldStore.setState(state => value.revision >= state.modelCatalog.revision ? { modelCatalog: value } : {});
         setModelLoaded(true);
       })
@@ -89,12 +99,13 @@ export function SettingsPanel() {
     return () => { active = false; };
   }, [open, retry]);
 
-  if (!open) return null;
+  if (!presence.present) return null;
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (section === "deepl") return;
     if (busy || (section === "sandbox" && !loaded) || (section === "model" && !modelLoaded)) return;
+    if (section === 'model' && simpleSetup && !draft.default_model) { setError(t('Choose a model before saving.')); return; }
     setBusy(true);
     setError("");
     try {
@@ -125,7 +136,7 @@ export function SettingsPanel() {
   };
 
   return createPortal(
-    <div className="dialog-backdrop settings-backdrop" onMouseDown={(event) => {
+    <div className="dialog-backdrop settings-backdrop" data-motion={presence.closing ? 'closing' : 'open'} aria-hidden={!open} {...(!open ? { inert: '' } : {})} onMouseDown={(event) => {
       if (event.target === event.currentTarget && !busy) setOpen();
     }}>
       <form className="settings-dialog" onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); if (!busy) setOpen(); } }} role="dialog" aria-modal="true" aria-labelledby="settings-title" onSubmit={submit}>
@@ -151,8 +162,9 @@ export function SettingsPanel() {
         {section === "deepl" ? <DeepLSettings /> : section === "model" ? <div className="settings-form">
           {!modelLoaded && !modelError && <p role="status">{t("Loading model settings…")}</p>}
           {modelLoaded && <>
-            {draft.revision === 0 && draft.connections.length > 0 && <p className="settings-description">{t("Previous models are included in this draft. Save to keep them on the backend.")}</p>}
-            <ModelConnectionsEditor value={draft} onChange={setDraft} saved={savedCatalog} busy={busy} />
+            {draft.revision === 0 && draft.connections.some(connection => connection.id === 'legacy') && <p className="settings-description">{t("Previous models are included in this draft. Save to keep them on the backend.")}</p>}
+            {simpleSetup ? <ConnectAI value={draft} onChange={setDraft} busy={busy} onAdvanced={() => setSimpleSetup(false)} />
+              : <ModelConnectionsEditor value={draft} onChange={setDraft} saved={savedCatalog} busy={busy} />}
           </>}
         </div> : section === "storage" ? <div className="settings-form">
           <div className="settings-page-heading"><h3>{t("Storage")}</h3></div>
