@@ -52,7 +52,32 @@ EVIDENCE = Table(
     Index("ix_oaw_experiment_evidence_record", "record_id"),
 )
 
+# One immutable snapshot per revision, so every change to a record is traceable: who
+# (``actor``), through what (``source``: user / llm / agent / revert) and what moved
+# (``changes``: one {"field", "before", "after"} per top-level field that differs).
+REVISIONS = Table(
+    "oaw_kb_experiment_record_revision", METADATA,
+    Column("record_id", String(36), primary_key=True),
+    Column("revision", Integer, primary_key=True),
+    Column("name", String(500), nullable=False),
+    Column("data", Text, nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("changes", Text, nullable=False),
+    Column("actor", String(255), nullable=True),
+    Column("source", String(32), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
 STATUSES = ("draft", "confirmed")
+SOURCES = ("user", "llm", "agent", "revert")
+
+
+def diff_data(before, after):
+    """Top-level field changes between two data objects."""
+    before, after = before or {}, after or {}
+    return [{"field": key, "before": before.get(key), "after": after.get(key)}
+            for key in sorted(set(before) | set(after), key=str)
+            if before.get(key) != after.get(key) or (key in before) != (key in after)]
 
 
 class ConflictingRevision(KnowledgeError):
@@ -85,7 +110,7 @@ class ExperimentRecordStore:
         METADATA.create_all(engine, checkfirst=True)
 
     def create(self, *, group_id, schema_id, name, data, conflicts=(), created_by=None,
-              record_id=None):
+              record_id=None, source="llm"):
         identifier = str(record_id or uuid.uuid4())
         now = datetime.now(timezone.utc)
         with self._engine.begin() as connection:
@@ -94,6 +119,10 @@ class ExperimentRecordStore:
                 name=name, data=json.dumps(data), conflicts=json.dumps(list(conflicts)),
                 status="draft", revision=1, created_by=created_by,
                 created_at=now, updated_at=now))
+            connection.execute(insert(REVISIONS).values(
+                record_id=identifier, revision=1, name=name, data=json.dumps(data),
+                status="draft", changes=json.dumps(diff_data({}, data)),
+                actor=created_by, source=source, created_at=now))
         return self.require(identifier)
 
     def get(self, record_id):
@@ -121,7 +150,7 @@ class ExperimentRecordStore:
         return [_row_json(row) for row in rows]
 
     def update(self, record_id, *, name=None, data=None, conflicts=None, status=None,
-              expected_revision=None):
+              expected_revision=None, actor=None, source="user"):
         with self._engine.begin() as connection:
             current = connection.execute(
                 select(RECORDS).where(RECORDS.c.id == str(record_id))).mappings().first()
@@ -142,7 +171,32 @@ class ExperimentRecordStore:
             if status is not None:
                 values["status"] = status
             connection.execute(update(RECORDS).where(RECORDS.c.id == str(record_id)).values(**values))
+            new_data = data if data is not None else json.loads(current["data"])
+            connection.execute(insert(REVISIONS).values(
+                record_id=str(record_id), revision=values["revision"],
+                name=values.get("name", current["name"]), data=json.dumps(new_data),
+                status=values.get("status", current["status"]),
+                changes=json.dumps(diff_data(json.loads(current["data"]), new_data)),
+                actor=actor, source=source if source in SOURCES else "user",
+                created_at=values["updated_at"]))
         return self.require(record_id)
+
+    def history(self, record_id, limit=100):
+        """Newest-first change log for one record, each entry carrying its snapshot."""
+        with self._engine.connect() as connection:
+            rows = connection.execute(select(REVISIONS).where(
+                REVISIONS.c.record_id == str(record_id))
+                .order_by(REVISIONS.c.revision.desc()).limit(max(1, min(limit, 500)))).mappings().all()
+        return [{"revision": row["revision"], "name": row["name"], "data": json.loads(row["data"]),
+                 "status": row["status"], "changes": json.loads(row["changes"]),
+                 "actor": row["actor"], "source": row["source"],
+                 "created_at": _aware(row["created_at"])} for row in rows]
+
+    def revision(self, record_id, revision):
+        for entry in self.history(record_id, limit=500):
+            if entry["revision"] == revision:
+                return entry
+        raise KnowledgeError(f"Experiment record {record_id} has no revision {revision}")
 
     def set_evidence(self, record_id, links):
         """Replace every evidence link for one record — used on create and re-assemble."""

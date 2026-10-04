@@ -45,6 +45,8 @@ type ExperimentConflict = { field: string; values: { value: unknown; source_id: 
 type ExperimentItem = { id: string; group_id: string; schema_id: string; name: string;
   data: Record<string, unknown>; conflicts: ExperimentConflict[]; status: "draft" | "confirmed";
   revision: number; created_by: string | null; created_at: string; updated_at: string };
+type ExperimentRevision = { revision: number; name: string; status: string; actor: string | null;
+  source: string; created_at: string; changes: { field: string; before: unknown; after: unknown }[] };
 type ExperimentDetail = ExperimentItem & {
   evidence: { record_id: string; projection_id: string; source_id: string; artifact_id: string | null }[] };
 /** An approval the card asked the person to confirm before it publishes a fact. */
@@ -55,18 +57,25 @@ type Pending = { args: Record<string, unknown>; reasons: string[] };
  * Settings only ever appears for the engineering view. */
 type Category = "literature" | "experiment" | "settings";
 type LiteratureTab = "sources" | "schemas" | "projections" | "graph";
-type ExperimentTab = "experiments" | "schemas";
+type ExperimentTab = "raw" | "experiments" | "schemas";
 const LITERATURE_TABS: { id: LiteratureTab; label: () => string }[] = [
   { id: "sources", label: () => t("Sources") },
   { id: "schemas", label: () => t("Schemas") }, { id: "projections", label: () => t("Projections") },
   { id: "graph", label: () => t("Graph") },
 ];
 const EXPERIMENT_TABS: { id: ExperimentTab; label: () => string }[] = [
+  { id: "raw", label: () => t("Raw data") },
   { id: "experiments", label: () => t("Experiments") }, { id: "schemas", label: () => t("Schemas") },
 ];
 
 const ACTIVE = new Set(["QUEUED", "RUNNING", "PENDING", "RETRYING"]);
-const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+const MAX_UPLOAD = 32 * 1024 * 1024;
+/** Turn the two dependency failures a person can fix into an actionable sentence. */
+const friendly = (text: string) =>
+  /openpyxl/i.test(text) ? `${text} — ${t("ask an administrator to install openpyxl in the backend environment to read Excel files")}`
+  : /VISION_(API_KEY|BASE_URL)|vision model/i.test(text) ? `${text} — ${t("images need a configured vision model; set it up in the backend environment")}`
+  : text;
+const message = (error: unknown) => friendly(error instanceof Error ? error.message : String(error));
 const shortId = (value: string) => value.length > 13 ? `${value.slice(0, 8)}…` : value;
 const bytes = (value: number) => value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KiB` : `${(value / 1024 / 1024).toFixed(1)} MiB`;
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
@@ -130,7 +139,7 @@ export function Workspace({ host, card }: PluginViewProps) {
   // own last-opened tab so hopping to Experiment and back does not lose your place.
   const [category, setCategory] = useState<Category>("literature");
   const [literatureTab, setLiteratureTab] = useState<LiteratureTab>("sources");
-  const [experimentTab, setExperimentTab] = useState<ExperimentTab>("experiments");
+  const [experimentTab, setExperimentTab] = useState<ExperimentTab>("raw");
   const [overview, setOverview] = useState<Overview>();
   const [sources, setSources] = useState<Source[]>([]);
   const [schemas, setSchemas] = useState<SchemaItem[]>([]);
@@ -168,6 +177,10 @@ export function Workspace({ host, card }: PluginViewProps) {
   const [experiments, setExperiments] = useState<ExperimentItem[]>([]);
   const [experimentDetail, setExperimentDetail] = useState<ExperimentDetail>();
   const [experimentDataDraft, setExperimentDataDraft] = useState("");
+  const [experimentHistory, setExperimentHistory] = useState<ExperimentRevision[]>([]);
+  const [experimentQuery, setExperimentQuery] = useState("");
+  const [experimentSchemaId, setExperimentSchemaId] = useState("");
+  const [dragging, setDragging] = useState(false);
   const [reviewNotes, setReviewNotes] = useState("");
   const [pending, setPending] = useState<Pending>();
   const [notice, setNotice] = useState("");
@@ -296,6 +309,8 @@ export function Workspace({ host, card }: PluginViewProps) {
   const upload = (files: FileList | File[]) => perform(async () => {
     const list = Array.from(files);
     if (!list.length) return;
+    const tooBig = list.find(file => file.size > MAX_UPLOAD);
+    if (tooBig) throw new Error(t("{v0} is larger than 32 MiB", { v0: tooBig.name }));
     for (const file of list) {
       const content = await fileBase64(file);
       await call("ingest", { filename: file.name, content_base64: content,
@@ -464,7 +479,54 @@ export function Workspace({ host, card }: PluginViewProps) {
     const detail = result.experiment as ExperimentDetail;
     setExperimentDetail(detail);
     setExperimentDataDraft(pretty(detail.data));
+    const log = await call("experiments", { operation: "history", record_id: id });
+    if (generation.current === current) setExperimentHistory((log.history as ExperimentRevision[]) ?? []);
   }, [call]);
+
+  const searchExperiments = () => perform(async () => {
+    const result = await call("experiments", { query: experimentQuery.trim() || undefined, ...groupArgs() });
+    setExperiments((result.experiments as ExperimentItem[]) ?? []);
+  });
+
+  const revertExperiment = (revision: number) => experimentDetail && perform(async () => {
+    await call("experiment_update", { operation: "revert", record_id: experimentDetail.id, revision,
+      expected_revision: experimentDetail.revision });
+    setNotice(t("Restored revision {v0} as a new revision", { v0: revision }));
+    await refresh();
+    await loadExperiment(experimentDetail.id);
+  });
+
+  const proposeExperiment = () => experimentDetail && perform(async () => {
+    const result = await call("experiment_to_draft", { record_id: experimentDetail.id });
+    const built = result.draft as { entities: number; relations: number };
+    setNotice(t("Draft proposed to the graph: {v0} entities, {v1} relations. Review it in Literature → Graph.", {
+      v0: built.entities, v1: built.relations }));
+    await refresh();
+  });
+
+  // One raw file -> one record: project the file against an experiment schema, then
+  // assemble that single projection into a record (the merge of one is the file itself).
+  const extractRecords = (sourceIds: string[]) => perform(async () => {
+    if (!experimentSchemaId) throw new Error(t("Choose an extraction schema first"));
+    if (!selectedModel) throw new Error(deployed
+      ? t("This deployment has no default model configured yet")
+      : t("Configure a model connection first"));
+    const targets = sources.filter(item => sourceIds.includes(item.id) && item.record_id);
+    if (!targets.length) throw new Error(t("Select at least one converted source first"));
+    let last = "";
+    for (const source of targets) {
+      const projected = await request(`knowledge/${card.id}/project`, {
+        schema_id: experimentSchemaId, model: selectedModel, record_id: source.record_id }, deployed);
+      const built = await request(`knowledge/${card.id}/assemble`, {
+        projection_ids: [(projected.projection as { id: string }).id], model: selectedModel }, deployed);
+      last = (built.record as { id: string }).id;
+    }
+    setNotice(t("Extracted {v0} record(s). Review them in Records.", { v0: targets.length }));
+    setSelectedSources([]);
+    await refresh();
+    setExperimentTab("experiments");
+    await loadExperiment(last);
+  });
 
   const assembleExperiment = () => perform(async () => {
     if (!chosenExperiment.length) throw new Error(t("Select at least one projection first"));
@@ -652,9 +714,9 @@ export function Workspace({ host, card }: PluginViewProps) {
         <small>{t("This is the same model catalog configured on the canvas — it changes what the Agent itself uses to answer, in every conversation, not just this one.")}</small>
         </div>
       </WorkspaceSection>}
-      {category === "literature" && literatureTab === "sources" && <WorkspaceSection id="sources" title={t("Sources")} className="knowledge-section">
+      {((category === "literature" && literatureTab === "sources") || (category === "experiment" && experimentTab === "raw")) && <WorkspaceSection id="sources" title={category === "experiment" ? t("Raw data") : t("Sources")} className="knowledge-section">
         <div className="knowledge-section">
-        <h3>{t("Sources")}</h3>
+        <h3>{category === "experiment" ? t("Raw data") : t("Sources")}</h3>
         <Banner error={error} notice={notice} />
         <div className="knowledge-groupbar">
           {/* The toolbar's own group picker lives outside every section, so a layout that
@@ -685,6 +747,15 @@ export function Workspace({ host, card }: PluginViewProps) {
             <button type="button" disabled={busy} onClick={() => setGroupEditing(false)}>{t("Cancel")}</button>
           </div>}
         </div>
+        {category === "experiment" && <div
+          className={`knowledge-dropzone${dragging ? " is-dragging" : ""}`} role="group"
+          aria-label={t("Drop files here")}
+          onDragOver={event => { event.preventDefault(); setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={event => { event.preventDefault(); setDragging(false);
+            const files = Array.from(event.dataTransfer.files);
+            if (files.length && !busy) void upload(files); }}>
+          {t("Drop pictures, Excel, CSV or PDF files here")}</div>}
         <label className="knowledge-upload">{t("Add documents")}
           <input type="file" multiple disabled={busy} onChange={event => {
             const files = Array.from(event.target.files ?? []);
@@ -745,6 +816,27 @@ export function Workspace({ host, card }: PluginViewProps) {
             onClick={() => void processPending()}>
             {t("Process all pending ({v0})", { v0: pendingSources.length })}</button>
         </div>
+        {category === "experiment" && <div className="knowledge-projectbar">
+          <label>{t("Experiment schema")}
+            <select value={experimentSchemaId} disabled={busy} onChange={event => setExperimentSchemaId(event.target.value)}>
+              <option value="">{t("Choose a schema")}</option>
+              {schemas.filter(item => item.kind === "experiment").map(item =>
+                <option key={item.id} value={item.id}>{item.name} v{item.version}</option>)}
+            </select>
+          </label>
+          {deployed
+            ? <p className="knowledge-meta">{t("Model: {v0}", { v0: defaultModel || t("none configured") })}</p>
+            : <label>{t("Model")}
+                <select value={selectedModel} disabled={busy || !models.length} onChange={event => setModel(event.target.value)}>
+                  {!models.length && <option value="">{t("No model configured")}</option>}
+                  {models.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+                </select>
+              </label>}
+          <button type="button" className="knowledge-primary"
+            disabled={busy || !selectedSources.length || !experimentSchemaId || !selectedModel}
+            onClick={() => void extractRecords(selectedSources)}>
+            {t("Extract {v0} selected to records", { v0: selectedSources.length })}</button>
+        </div>}
 
         {currentSource && <div className="knowledge-detail">
           <h4>{t("Extracted markdown — {v0}", { v0: currentSource.filename })}</h4>
@@ -920,7 +1012,7 @@ export function Workspace({ host, card }: PluginViewProps) {
         <p className="knowledge-meta">{t("Assemble several per-file extractions (one kind=\"experiment\" schema) into one structured, queryable experiment record. Never touches a draft, review or the published graph.")}</p>
         <h4>{t("Select projections to assemble")}</h4>
         {!experimentProjections.length
-          ? <p className="knowledge-empty">{t("Project a document against an experiment-kind schema first, in Sources.")}</p>
+          ? <p className="knowledge-empty">{t("Extract a file against an experiment-kind schema first, in Raw data.")}</p>
           : <ul className="knowledge-list">
               {experimentProjections.map(item => <li key={item.id} className="knowledge-checkrow">
                 <label><input type="checkbox" checked={chosenExperiment.includes(item.id)} disabled={busy}
@@ -939,6 +1031,12 @@ export function Workspace({ host, card }: PluginViewProps) {
           {t("Assemble experiment record from {v0} selected", { v0: chosenExperiment.length })}</button>
 
         <h4>{t("Experiment records")}</h4>
+        <div className="knowledge-formbar">
+          <input value={experimentQuery} disabled={busy} placeholder={t("Search records by name or value…")}
+            onChange={event => setExperimentQuery(event.target.value)}
+            onKeyDown={event => { if (event.key === "Enter") void searchExperiments(); }} />
+          <button type="button" disabled={busy} onClick={() => void searchExperiments()}>{t("Search")}</button>
+        </div>
         {!experiments.length && <p className="knowledge-empty">{t("No experiment records yet.")}</p>}
         <ul className="knowledge-list">
           {experiments.map(item => <li key={item.id}>
@@ -971,7 +1069,19 @@ export function Workspace({ host, card }: PluginViewProps) {
               {t("Save changes")}</button>
             <button type="button" className="knowledge-primary" disabled={busy || experimentDetail.status === "confirmed"}
               onClick={() => void confirmExperiment()}>{t("Confirm")}</button>
+            <button type="button" disabled={busy || experimentDetail.status !== "confirmed"}
+              title={t("Creates an unpublished graph draft for review")}
+              onClick={() => void proposeExperiment()}>{t("Propose to graph")}</button>
           </div>
+          <h4>{t("Change history")}</h4>
+          <ul className="knowledge-events">
+            {experimentHistory.map(entry => <li key={entry.revision}>
+              <code>r{entry.revision}</code> {entry.actor ?? t("unknown")} ({entry.source}) · {entry.created_at}
+              {entry.changes.length ? ` · ${entry.changes.map(change => change.field).join(", ")}` : ""}
+              {entry.revision !== experimentDetail.revision && <button type="button" disabled={busy}
+                onClick={() => void revertExperiment(entry.revision)}>{t("Restore")}</button>}
+            </li>)}
+          </ul>
         </div>}
         </div>
       </WorkspaceSection>}

@@ -7,7 +7,13 @@ file and carries three related workflows over the same collection:
   projection → draft graph → human review → published knowledge graph.
 - **Experiments** — several files describing one experiment (a spreadsheet, a
   photographed notebook page, a paper) → per-file structured projections → one
-  merged, queryable experiment record, confirmed by a person.
+  merged, queryable experiment record, confirmed by a person. The Experiment
+  workflow has its own **Raw data** tab (drag-and-drop upload, convert, "Extract to
+  records": one file → one record), a **Records** tab with search, a per-revision
+  change history (who, when, which fields) with restore, and **Propose to graph**,
+  which only creates an unpublished draft for a person to approve. In conversation
+  the Librarian can filter, compare and read the history of records, and propose a
+  confirmed record to the graph (`knowledge_experiment_to_draft`).
 - The knowledge graph is opt-in, not required by either workflow: search answers
   document-level questions and experiment records answer structured ones without
   ever touching a draft or a review.
@@ -310,6 +316,7 @@ conversion, create/delete) is covered by
 | --- | --- |
 | Knowledge read | `knowledge_overview`, `knowledge_sources`, `knowledge_markdown`, `knowledge_document_search`, `knowledge_schemas`, `knowledge_projections`, `knowledge_experiments`, `knowledge_graph`, `knowledge_jobs` |
 | Knowledge extract | Read tools plus `knowledge_projection_prompt`, `knowledge_save_projection`, `knowledge_draft`, `knowledge_experiment_assemble_prompt`, `knowledge_experiment_save`, `knowledge_experiment_update` |
+| Knowledge propose | Read tools plus `knowledge_experiment_to_draft` (proposes a confirmed experiment record as an unpublished draft; a person still approves) |
 
 Uploading raw data (`ingest`), converting it (`process`), managing groups
 (`groups`), changing card settings (`settings`) and reviewing a draft (`review`)

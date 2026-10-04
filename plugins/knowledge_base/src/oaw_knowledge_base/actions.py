@@ -15,6 +15,7 @@ import binascii
 import json
 import re
 import uuid
+from types import SimpleNamespace
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -808,7 +809,8 @@ def experiment_save(context, arguments):
     if request.record_id:
         record = kb.oaw_experiments.update(
             request.record_id, name=request.name, data=request.data,
-            conflicts=request.conflicts, expected_revision=request.expected_revision)
+            conflicts=request.conflicts, expected_revision=request.expected_revision,
+            actor=_actor(context), source="llm")
     else:
         record = kb.oaw_experiments.create(
             group_id=_uuid(request.group_id, "group_id"), schema_id=request.schema_id,
@@ -819,55 +821,156 @@ def experiment_save(context, arguments):
 
 
 class Experiments(Request):
-    operation: Literal["list", "get"] = "list"
+    operation: Literal["list", "get", "history", "compare"] = "list"
     record_id: str | None = None
+    record_ids: list[str] = Field(default_factory=list, max_length=20)
     group_id: str | None = None
     all_groups: bool = False
     schema_id: str | None = None
     status: Literal["draft", "confirmed"] | None = None
+    # Free text over the record's name and data, and/or one field filter. ``field`` is
+    # a dotted path into data ("conditions.temperature"); ``value`` is matched
+    # case-insensitively as a substring of the field's rendered value.
+    query: str | None = Field(default=None, max_length=500)
+    field: str | None = Field(default=None, max_length=200)
+    value: str | None = Field(default=None, max_length=500)
     limit: int = Field(default=50, ge=1, le=200)
 
 
+def _dig(data, path):
+    for part in path.split("."):
+        if isinstance(data, dict) and part in data:
+            data = data[part]
+        else:
+            return None
+    return data
+
+
+def _text(value):
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
+def _matches(record, request):
+    if request.query and request.query.lower() not in (
+            record["name"] + " " + json.dumps(record["data"], ensure_ascii=False)).lower():
+        return False
+    if request.field:
+        found = _dig(record["data"], request.field)
+        if found is None:
+            return False
+        if request.value and request.value.lower() not in _text(found).lower():
+            return False
+    return True
+
+
+def _compare(records):
+    """Side-by-side view: one row per top-level field, one value per record."""
+    fields = sorted({key for record in records for key in record["data"]}, key=str)
+    return {"records": [{"id": item["id"], "name": item["name"], "status": item["status"],
+                         "revision": item["revision"]} for item in records],
+            "fields": [{"field": field, "values": [item["data"].get(field) for item in records],
+                        "differs": len({_text(item["data"].get(field)) for item in records}) > 1}
+                       for field in fields]}
+
+
 def experiments(context, arguments):
-    """List or read experiment records — structured entities assembled from several
-    uploaded files. Read-only: confirming or editing one is knowledge_experiment_update."""
+    """List, search, read, compare or read the change history of experiment records —
+    structured entities extracted from uploaded files. Read-only: confirming or editing
+    one is knowledge_experiment_update."""
     request = Experiments.model_validate(arguments)
     kb, group, _ = _base(context, request.group_id)
     if request.operation == "list":
         scope = _scope(group, request.all_groups)
+        filtered = request.query or request.field
         items = kb.oaw_experiments.list(
             group_id=str(scope) if scope else None, schema_id=request.schema_id,
-            status=request.status, limit=request.limit)
+            status=request.status, limit=500 if filtered else request.limit)
+        if filtered:
+            items = [item for item in items if _matches(item, request)][:request.limit]
         return _bounded({"experiments": items})
+    if request.operation == "compare":
+        if len(request.record_ids) < 2:
+            raise KnowledgeError("record_ids needs at least two records to compare")
+        return _bounded({"comparison": _compare(
+            [kb.oaw_experiments.require(identifier) for identifier in request.record_ids])})
     if not request.record_id:
         raise KnowledgeError("record_id is required")
+    if request.operation == "history":
+        kb.oaw_experiments.require(request.record_id)
+        return _bounded({"history": kb.oaw_experiments.history(request.record_id)})
     record = kb.oaw_experiments.require(request.record_id)
     record = {**record, "evidence": kb.oaw_experiments.evidence_for(request.record_id)}
     return _bounded({"experiment": record})
 
 
 class ExperimentUpdate(Request):
-    operation: Literal["confirm", "update"] = "update"
+    operation: Literal["confirm", "update", "revert"] = "update"
     record_id: str
     name: str | None = Field(default=None, max_length=500)
     data: dict[str, Any] | None = None
+    revision: int | None = Field(default=None, ge=1)
     expected_revision: int | None = None
 
 
 def experiment_update(context, arguments):
-    """Confirm or hand-edit one experiment record. Never touches a draft, a review
-    or the published graph — an experiment record is its own object from start to
-    finish, exactly as the design keeps the knowledge graph optional."""
+    """Confirm, hand-edit or revert one experiment record. Every change is written to
+    the record's history with who made it. Never touches a draft, a review or the
+    published graph."""
     request = ExperimentUpdate.model_validate(arguments)
     kb = open_client(context.node_id, context.storage_path)
+    actor = _actor(context)
     if request.operation == "confirm":
         record = kb.oaw_experiments.update(
-            request.record_id, status="confirmed", expected_revision=request.expected_revision)
+            request.record_id, status="confirmed", expected_revision=request.expected_revision,
+            actor=actor)
+    elif request.operation == "revert":
+        if request.revision is None:
+            raise KnowledgeError("revision is required to revert")
+        old = kb.oaw_experiments.revision(request.record_id, request.revision)
+        record = kb.oaw_experiments.update(
+            request.record_id, name=old["name"], data=old["data"], status="draft",
+            expected_revision=request.expected_revision, actor=actor, source="revert")
     else:
         record = kb.oaw_experiments.update(
             request.record_id, name=request.name, data=request.data,
-            expected_revision=request.expected_revision)
+            expected_revision=request.expected_revision, actor=actor)
     return _bounded({"experiment": record})
+
+
+class ExperimentToDraft(Request):
+    record_id: str
+
+
+def experiment_to_draft(context, arguments):
+    """Propose a confirmed experiment record to the knowledge graph as a draft. Nothing
+    is published: the draft still needs a person to review and approve it."""
+    request = ExperimentToDraft.model_validate(arguments)
+    kb = open_client(context.node_id, context.storage_path)
+    record = kb.oaw_experiments.require(request.record_id)
+    if record["status"] != "confirmed":
+        raise KnowledgeError("Only a confirmed experiment record can be proposed to the graph")
+    data = record["data"]
+    entities, relations, seen = [], [], set()
+    if isinstance(data.get("entities"), list):
+        _extend(entities, data["entities"], seen)
+        if isinstance(data.get("relations"), list):
+            relations.extend(data["relations"])
+    else:
+        schema = kb.schemas.get(record["schema_id"])
+        _generic(data, schema,
+                 SimpleNamespace(id=record["id"]), entities, relations, seen)
+    if not entities:
+        raise KnowledgeError("This record produced no entities; check the schema output shape")
+    evidence_ids = []
+    for link in kb.oaw_experiments.evidence_for(request.record_id):
+        evidence_ids.extend(str(item.id) for item in
+                            kb.evidence.list(output_id=_uuid(link["projection_id"], "projection_id"), limit=20))
+    item, revision = kb.knowledge.create_draft(
+        _uuid(record["group_id"], "group_id"), {"entities": entities, "relations": relations},
+        evidence_ids=evidence_ids, actor=_actor(context))
+    return _bounded({"draft": {"id": str(item.id), "status": item.status,
+                               "revision": revision.revision, "entities": len(entities),
+                               "relations": len(relations), "record_id": record["id"]}})
 
 
 SLUG = re.compile(r"[^a-z0-9]+")

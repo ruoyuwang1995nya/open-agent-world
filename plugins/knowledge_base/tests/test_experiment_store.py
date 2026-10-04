@@ -84,3 +84,21 @@ def test_evidence_links_are_replaced_wholesale_on_reassembly(store):
     assert len(links) == 1
     assert links[0]["projection_id"] == "p3"
     assert links[0]["artifact_id"] is None
+
+
+def test_history_records_every_change_with_actor_and_diff(store):
+    record = store.create(group_id="g1", schema_id="s", name="A", data={"x": 1}, created_by="llm")
+    store.update(record["id"], data={"x": 2, "y": 3}, actor="user:me")
+    store.update(record["id"], status="confirmed", actor="user:me")
+    history = store.history(record["id"])
+    assert [h["revision"] for h in history] == [3, 2, 1]
+    assert history[1]["actor"] == "user:me" and history[1]["source"] == "user"
+    assert {c["field"] for c in history[1]["changes"]} == {"x", "y"}
+    assert history[0]["changes"] == [] and history[0]["status"] == "confirmed"
+    assert store.revision(record["id"], 1)["data"] == {"x": 1}
+
+
+def test_revision_unknown_raises(store):
+    record = store.create(group_id="g1", schema_id="s", name="A", data={})
+    with pytest.raises(KnowledgeError):
+        store.revision(record["id"], 9)

@@ -63,10 +63,13 @@ OPERATIONS: tuple[Operation, ...] = (
         description="Store a merged experiment record built from several projections, linking every contributing file as evidence. An experiment record never touches a draft, review or the published graph — it is confirmed or edited directly with knowledge_experiments."),
     Operation("experiments", actions.experiments, actions.Experiments,
         tool_name="knowledge_experiments",
-        description="List or read experiment records — structured entities assembled from several uploaded files (e.g. a spreadsheet, a photographed notebook page and a paper) describing one experiment. Use this to compare experiments directly instead of the knowledge graph."),
+        description="List, search, read, compare or read the change history of experiment records — structured entities extracted from uploaded files (a spreadsheet, a photographed notebook page, a paper). Filter with query (free text) or field+value (dotted path into the data); operation=compare with record_ids gives a side-by-side table; operation=history shows who changed what. Cite the record id and revision. Use this instead of the knowledge graph to answer questions about experiments."),
     Operation("experiment_update", actions.experiment_update, actions.ExperimentUpdate,
         tool_name="knowledge_experiment_update",
-        description="Confirm or hand-edit one experiment record. Never touches a draft, review or the published graph."),
+        description="Confirm, hand-edit or revert (to an earlier revision) one experiment record; every change is recorded in its history. Never touches a draft, review or the published graph."),
+    Operation("experiment_to_draft", actions.experiment_to_draft, actions.ExperimentToDraft,
+        tool_name="knowledge_experiment_to_draft",
+        description="Propose one confirmed experiment record to the knowledge graph by creating a draft from it. This only proposes: a person must still review and approve the draft before anything is published."),
     Operation("graph", actions.graph, actions.GraphQuery, tool_name="knowledge_graph",
         description="Query the published knowledge graph by entity type, relation type or name, or traverse outward from one entity. Only human-approved facts appear here."),
     Operation("jobs", actions.jobs, actions.Jobs, tool_name="knowledge_jobs",
@@ -91,8 +94,10 @@ AGENT_OPERATIONS: tuple[Operation, ...] = tuple(item for item in OPERATIONS if i
 
 READ_ACTIONS = ("overview", "sources", "markdown", "search", "schemas", "projections",
                "experiments", "graph", "jobs")
+PROPOSE_ACTIONS = READ_ACTIONS + ("experiment_to_draft",)
 EXTRACT_ACTIONS = READ_ACTIONS + ("projection_prompt", "save_projection", "draft",
-                                 "experiment_assemble_prompt", "experiment_save", "experiment_update")
+                                 "experiment_assemble_prompt", "experiment_save", "experiment_update",
+                                 "experiment_to_draft")
 
 
 def tool_manifest() -> list[dict]:

@@ -11,10 +11,11 @@ pane here — no individual section needs its own place in the generic workspace
 layout to be reachable, which is also what lets the card filter which tabs even
 show up per workflow, something the generic multi-card tab bar cannot do on its own.
 
-The Librarian holds ``knowledge.base.read`` and nothing more. It answers questions
+The Librarian holds ``knowledge.base.propose``: read access plus one write, proposing a
+confirmed experiment record to the graph as an unpublished draft. It answers questions
 about what the base contains — searching documents, reading experiment records and
 querying the published graph — but it cannot upload, cannot write projections,
-drafts or experiment records, and cannot approve. Extraction and assembly stay things
+experiment records, and cannot approve or publish. Extraction and assembly stay things
 the person does by clicking, so that every fact in the graph, and every experiment
 record, was put there deliberately.
 """
@@ -41,7 +42,13 @@ Your tools:
 - knowledge_experiments — experiment records: one structured entity assembled from
   several uploaded files describing the same experiment (e.g. a spreadsheet, a
   photographed notebook page and a paper). Use this to compare experiments directly
-  — it is confirmed by a person but never enters the knowledge graph.
+  — it is confirmed by a person but never enters the knowledge graph on its own.
+  Filter with query / field+value, use operation=compare with record_ids for a
+  side-by-side table, and operation=history to see who changed what and when.
+- knowledge_experiment_to_draft — when the person asks you to add a confirmed
+  experiment record to the graph, call this. It only proposes a draft; a person must
+  still review and approve it in the Graph tab, so say so plainly. Never claim the
+  graph was updated.
 - knowledge_graph — the published graph: query entities by name or type, or traverse
   outward from one. This is the only place facts live.
 - knowledge_jobs — conversion progress and any failure, per group or across the base.
@@ -117,8 +124,8 @@ def definition():
     )
     edges = (
         PresetEdge(source="agent", target="conversation", relationship="participate"),
-        PresetEdge(source="agent", target="knowledge", relationship="knowledge.base.read"),
+        PresetEdge(source="agent", target="knowledge", relationship="knowledge.base.propose"),
     )
     return LegionPresetDefinition(id="knowledge.base.research", name="Knowledge research",
-        description="You upload documents and approve what they mean; a read-only Librarian answers questions about the base and the graph you build.",
-        revision=1, nodes=nodes, edges=edges)
+        description="You upload documents and approve what they mean; a Librarian answers questions about the base and the graph you build, and can propose confirmed experiment records for your review.",
+        revision=2, nodes=nodes, edges=edges)

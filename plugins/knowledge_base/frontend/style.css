@@ -69,6 +69,8 @@
 .knowledge-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 .knowledge-upload { font-size: 12px; }
+.knowledge-dropzone { border: 1px dashed currentColor; border-radius: 6px; padding: 14px; text-align: center; font-size: 12px; opacity: .75; }
+.knowledge-dropzone.is-dragging { opacity: 1; background: rgba(138, 111, 209, .12); }
 .knowledge-section > small { color: var(--ink-soft); font-size: 11px; line-height: 1.5; }
 .knowledge-search-inline { border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
 .knowledge-projectbar, .knowledge-formbar { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }

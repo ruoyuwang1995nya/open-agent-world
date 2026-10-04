@@ -230,6 +230,8 @@ it("assembles an experiment record from selected projections through the host br
   });
 
   fireEvent.click(await screen.findByRole("button", { name: "Experiment" }));
+  expect(await screen.findByRole("region", { name: "Raw data" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("tab", { name: "Experiments" }));
   const region = within(await screen.findByRole("region", { name: "Experiments" }));
   fireEvent.click(region.getByLabelText("Select projection projection-1"));
   fireEvent.click(region.getByRole("button", { name: "Assemble experiment record from 1 selected" }));
