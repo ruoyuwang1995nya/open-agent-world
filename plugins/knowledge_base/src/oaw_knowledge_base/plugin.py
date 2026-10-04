@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .errors import KnowledgeError, operator_message
 from .lifecycle import KnowledgeLifecycle
-from .operations import EXTRACT_ACTIONS, OPERATIONS, READ_ACTIONS
+from .operations import EXTRACT_ACTIONS, OPERATIONS, PROPOSE_ACTIONS, READ_ACTIONS
 from .preset import definition as research_preset
 
 PREFIX = "knowledge.base"
@@ -49,6 +49,7 @@ DEPLOYMENT_FIELDS = {
     "experiment_save": frozenset({"record"}),
     "experiments": frozenset({"experiments", "experiment"}),
     "experiment_update": frozenset({"experiment"}),
+    "experiment_to_draft": frozenset({"draft"}),
     "review": frozenset({"decision", "draft_id", "status", "reasons", "message", "fact", "event",
                          "graph"}),
     "graph_schema": frozenset({"schema_id"}),
@@ -95,8 +96,8 @@ def _deployment():
                               "projection_prompt", "draft", "review",
                               config_fields={"default_model"}),
             "experiments": _surface("projections", "experiments", "experiment_assemble_prompt",
-                                    "experiment_save", "experiment_update",
-                                    config_fields={"default_model"}),
+                                    "experiment_save", "experiment_update", "experiment_to_draft",
+                                    "draft", config_fields={"default_model"}),
         },
     )
 
@@ -180,6 +181,8 @@ class KnowledgeBasePlugin:
         for access, label, short, granted, description in (
             ("read", "Knowledge read", "read", READ_ACTIONS,
              "Can read this knowledge base: sources, extracted markdown, schemas, projections, drafts and the published graph."),
+            ("propose", "Knowledge propose", "propose", PROPOSE_ACTIONS,
+             "Can read this knowledge base and propose a confirmed experiment record to the graph as a draft. A person still reviews and approves it."),
             ("extract", "Knowledge extract", "extract", EXTRACT_ACTIONS,
              "Can read this knowledge base and add projections and draft graphs. Drafts stay unpublished until a person approves them on the canvas."),
         ):

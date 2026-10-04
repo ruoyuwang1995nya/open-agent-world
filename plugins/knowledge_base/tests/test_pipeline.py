@@ -587,6 +587,29 @@ def test_assemble_merges_several_projections_into_one_experiment_record(card):
         run(card, actions.experiment_update, operation="confirm", record_id=merged["id"],
             expected_revision=1)
 
+    assert len(run(card, actions.experiments, query="a1")["experiments"]) == 1
+    assert run(card, actions.experiments, query="nomatch")["experiments"] == []
+    assert len(run(card, actions.experiments, field="sample_id", value="a1")["experiments"]) == 1
+    assert run(card, actions.experiments, field="missing")["experiments"] == []
+
+    edited = run(card, actions.experiment_update, record_id=merged["id"],
+                 data={"sample_id": "A1", "conductivity": 9.9})["experiment"]
+    history = run(card, actions.experiments, operation="history", record_id=merged["id"])["history"]
+    assert [h["revision"] for h in history] == [edited["revision"], 2, 1]
+    reverted = run(card, actions.experiment_update, operation="revert", record_id=merged["id"],
+                   revision=1)["experiment"]
+    assert reverted["data"]["conductivity"] == 1.3 and reverted["status"] == "draft"
+    with pytest.raises(KnowledgeError):
+        run(card, actions.experiment_to_draft, record_id=merged["id"])
+    run(card, actions.experiment_update, operation="confirm", record_id=merged["id"])
+    proposed = run(card, actions.experiment_to_draft, record_id=merged["id"])["draft"]
+    assert proposed["status"] and proposed["entities"] >= 1
+    with pytest.raises(KnowledgeError):
+        run(card, actions.experiments, operation="compare", record_ids=[merged["id"]])
+    comparison = run(card, actions.experiments, operation="compare",
+                     record_ids=[merged["id"], merged["id"]])["comparison"]
+    assert comparison["fields"][0]["differs"] is False
+
 
 def test_assemble_refuses_a_non_experiment_schema(card):
     schema = run(card, actions.schemas, operation="create", name="Literature schema",
