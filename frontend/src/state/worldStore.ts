@@ -1892,14 +1892,16 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
             else if (normalizedType.includes("command_finished") && card.type !== "sandbox") status = "ready";
             else if (normalizedType.includes("error")) status = "error";
 
-            const shouldAppend =
+            // Reasoning already has one live snapshot in events and a durable
+            // Run archive. Copying cumulative text here retains every prefix.
+            const shouldAppend = event.payload.kind !== "model_reasoning" && (
               normalizedType.includes("stdout") ||
               normalizedType.includes("stderr") ||
               normalizedType.includes("tool_") ||
               normalizedType.includes("command_") ||
               normalizedType.includes("agent_") ||
               normalizedType.startsWith("run_") ||
-              normalizedType.includes("error");
+              normalizedType.includes("error"));
             const existing = Array.isArray(card.config.output) ? card.config.output : [];
             const output = shouldAppend && outputText
               ? [...existing, `${event.payload.command_id ? `[${String(event.payload.caller ?? "")} ${String(event.payload.command_id).slice(0, 8)}] ` : ""}${normalizedType.includes("stderr") ? "! " : ""}${outputText}`].slice(-100)

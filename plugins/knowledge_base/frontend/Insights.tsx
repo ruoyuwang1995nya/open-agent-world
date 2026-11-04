@@ -8,8 +8,6 @@ import type { Entity, Relation } from "./GraphMap";
 import { RunLogModal } from "./RunLogModal";
 import "./ResultsFlow.css";
 
-const LIVE_RUN = ["created", "running", "waiting"];
-
 /** One insight as ``knowledge_insights`` returns it, evidence included. */
 export type Insight = {
   id: string; group_id: string | null; schema_id: string | null; kind: InsightKind; title: string;
@@ -140,12 +138,8 @@ export function InsightsSection({
     if (!labAgent) return;
     setStopping(true);
     try {
-      const runs = await (await fetch(`${hostApiBase}/runs?agent_id=${encodeURIComponent(labAgent.id)}`)).json() as { run_id: string; status: string }[];
-      for (const run of runs) {
-        if (!LIVE_RUN.includes(run.status.toLowerCase())) continue;
-        const response = await fetch(`${hostApiBase}/runs/${encodeURIComponent(run.run_id)}/cancel`, { method: "POST" });
-        if (!response.ok) throw new Error(t("The run could not be stopped"));
-      }
+      const response = await fetch(`${hostApiBase}/agents/${encodeURIComponent(labAgent.id)}/stop`, { method: "POST" });
+      if (!response.ok) throw new Error(t("The run could not be stopped"));
       setExtracting(undefined);
       setNotice(t("Extraction stopped"));
       await perform(load);
