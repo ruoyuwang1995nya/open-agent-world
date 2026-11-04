@@ -167,12 +167,27 @@ inside their provider implementation.
 Run inspection and cancellation are available at:
 
 ```text
-GET  /api/runs
+GET  /api/runs?agent_id={agent_id}&limit=50&before={run_id}
 GET  /api/runs/{run_id}
 GET  /api/runs/{run_id}/children
 POST /api/runs/{run_id}/cancel
 ```
 
+
+`GET /api/runs` returns newest-first status summaries (default 50, maximum 200).
+Pass the last returned `run_id` as `before` to read older records; an empty page
+ends the history. `agent_id` and `task_id` filter the same ordered history.
+Full lifecycle details remain at `GET /api/runs/{run_id}`; append `?summary=true`
+for a single Run's status metadata without lifecycle bodies. Activity and reasoning
+bodies keep their existing lazy endpoints. `/api/lifecycle` includes all active
+executions and unresolved cleanup, plus at most 20 recent summaries. Its optional
+`agent_id` filter limits the Run list to that Agent without dropping older debt.
+
+Runtime providers retaining context sessions implement the optional
+`delete_context(agent_id, context_id)` hook. It must be idempotent. The host
+blocks new admission and verifies execution and cleanup have settled before
+releasing sessions, groups or their Conversation card. If provider cleanup fails,
+the durable context remains available for retry.
 
 ## Conversation timeline and sessions
 

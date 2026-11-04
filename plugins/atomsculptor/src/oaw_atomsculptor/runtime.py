@@ -900,8 +900,21 @@ class AtomSculptorRuntime(RuntimeProvider):
         async with self._lock:
             if agent_id not in self.records:
                 raise AgentNotFoundError(agent_id)
+            for key in list(self._session_ids):
+                if key[0] == agent_id:
+                    await self._delete_session(key)
             self.records.pop(agent_id)
-            self._session_ids = {key: value for key, value in self._session_ids.items() if key[0] != agent_id}
+
+    async def _delete_session(self, key: tuple[str, str]) -> None:
+        session_id = self._session_ids.get(key)
+        if session_id is not None:
+            await self._sessions.delete_session(app_name="open-agent-world-atomsculptor",
+                user_id=self._user_id(key[0]), session_id=session_id)
+            self._session_ids.pop(key, None)
+
+    async def delete_context(self, agent_id: str, context_id: str) -> None:
+        async with self._lock:
+            await self._delete_session((agent_id, context_id or "default"))
 
     async def get_agent(self, agent_id: str) -> AgentInfo:
         try:

@@ -13,6 +13,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Literal
+from weakref import WeakValueDictionary
 
 from pydantic import BaseModel, Field
 from open_agent_world.context import (
@@ -107,7 +108,7 @@ class ContextStore:
     def __init__(self, database: Database, events: EventHub) -> None:
         self.database = database
         self.events = events
-        self._locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = WeakValueDictionary()
         # A process restart cannot still be compacting. Keep the last checkpoint.
         with database.transaction() as db:
             db.execute("""UPDATE agent_contexts SET status_json = json_set(

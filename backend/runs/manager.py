@@ -8,6 +8,7 @@ from contextvars import ContextVar
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any
+from weakref import WeakValueDictionary
 
 from backend.agents import (
     AgentConfig,
@@ -96,9 +97,12 @@ class RunManager:
     _terminal_done: dict[str, asyncio.Event] = field(default_factory=dict)
     _occupied_runs: dict[str, str] = field(default_factory=dict)
     _suspensions: dict[str, RunSuspension] = field(default_factory=dict)
-    _start_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
-    _transition_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
-    _cancel_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
+    # Lock holders and queued callers retain the same object; idle keys disappear
+    # only after the last caller releases its reference, never while queued.
+    _start_locks: WeakValueDictionary[str, asyncio.Lock] = field(default_factory=WeakValueDictionary)
+    _transition_locks: WeakValueDictionary[str, asyncio.Lock] = field(default_factory=WeakValueDictionary)
+    _cancel_locks: WeakValueDictionary[str, asyncio.Lock] = field(default_factory=WeakValueDictionary)
+    _deleting_contexts: set[str] = field(default_factory=set)
     _deleting_agents: set[str] = field(default_factory=set)
     cleanup_timeout_seconds: float = 10.0
     execution_deadline_seconds: float = 3600.0
@@ -120,7 +124,7 @@ class RunManager:
         return _current_invocation.get()
 
     async def notify_conversation_input(self, agent_id: str, conversation_id: str, session_id: str) -> None:
-        for run in self.list_runs(agent_id=agent_id):
+        for run in self.store.current(agent_id=agent_id, summary=True):
             if run.status not in TERMINAL_RUN_STATUSES and self._conversation_scope(run) == (conversation_id, session_id):
                 try:
                     await self._provider(run.runtime_provider_id).notify_input(run.run_id)
@@ -202,8 +206,9 @@ class RunManager:
                 recovery_kind='backend_restart',
                 recovery_classification=receipts.recovery_classification(record.run_id),
                 recovery_receipts=visible_receipts)
-            self._terminal_done.setdefault(record.run_id, asyncio.Event()).set()
             await self._publish_run(record, EventType.RUN_INTERRUPTED)
+        # Recovery also repairs legacy archives whose terminal Run has no
+        # execution marker. Keep this startup pass separate from status queries.
         for record in self.list_runs():
             from .reasoning import RunReasoning
             RunReasoning(self.state, record.run_id).interrupt()
@@ -217,7 +222,7 @@ class RunManager:
 
     async def shutdown(self) -> None:
         self.shutting_down = True
-        records = [record for record in self.list_runs() if record.status not in TERMINAL_RUN_STATUSES
+        records = [record for record in self.store.current() if record.status not in TERMINAL_RUN_STATUSES
                    or record.lifecycle.get('cleanup') in {'pending', 'failed'}]
         results = await asyncio.gather(*(self.cancel_run(record.run_id) for record in records), return_exceptions=True)
         for record, result in zip(records, results):
@@ -304,6 +309,10 @@ class RunManager:
                     ancestor = self.get_run(ancestor.parent_run_id) if ancestor.parent_run_id else None
                 task_id = task_id or parent.task_id
                 context_id = context_id or parent.context_id
+            if context_id in self._deleting_contexts:
+                raise RuntimeUnavailableError("Conversation context is being deleted")
+            if caller_kind == "conversation" and self.context_store is not None and self.context_store.session(context_id) is None:
+                raise RuntimeUnavailableError("Conversation session no longer exists")
             record = self.store.create(
                 agent_id=agent_id,
                 run_id=run_id,
@@ -407,7 +416,7 @@ class RunManager:
         return self.state.resolve(StateContext((scope,)), "output_text").value
 
     def holds_agent_slot(self, run_id: str) -> bool:
-        self.get_run(run_id)
+        """Capacity is process-local; inspecting it does not load Run history."""
         return run_id in self._occupied_runs
 
     def get_suspension(self, run_id: str) -> RunSuspension | None:
@@ -497,7 +506,9 @@ class RunManager:
         if target in TERMINAL_RUN_STATUSES:
             self._suspensions.pop(run_id, None)
             self._release_settled_capacity(run_id)
-            self._terminal_done.setdefault(run_id, asyncio.Event()).set()
+            terminal = self._terminal_done.pop(run_id, None)
+            if terminal is not None:
+                terminal.set()
             outcomes = record.lifecycle.get("structure_outcomes") or {}
             delivery = ({"delivery_state": "succeeded" if target is RunStatus.SUCCEEDED else "failed"}
                         if outcomes else {})
@@ -595,7 +606,7 @@ class RunManager:
                     self.store.update_lifecycle(run_id, cleanup='failed', cleanup_reason=f'{type(error).__name__}: {error}')
                     raise
             pending = asyncio.create_task(tracked_cleanup(), name=f'run-cleanup:{run_id}')
-            pending.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+            pending.add_done_callback(lambda task: self._cleanup_finished(run_id, task))
             self._cleanup_tasks[run_id] = pending
         done, _ = await asyncio.wait({pending}, timeout=self.cleanup_timeout_seconds)
         if not done:
@@ -612,7 +623,41 @@ class RunManager:
         return self.store.update_lifecycle(run_id, cleanup='complete' if confirmed else 'uncertain',
             cleanup_reason=None if confirmed else 'Original provider session is unavailable; external termination cannot be verified')
 
+    def _cleanup_finished(self, run_id: str, task: asyncio.Task) -> None:
+        if not task.cancelled():
+            task.exception()
+        if self._cleanup_tasks.get(run_id) is task:
+            self._cleanup_tasks.pop(run_id, None)
+        if self.execution_settled is not None:
+            self.execution_settled()
+
+    @asynccontextmanager
+    async def deleting_contexts(self, context_ids: list[str]):
+        """Keep admission closed until provider sessions and durable contexts are removed."""
+        from backend.errors import ConflictError
+        ids = set(context_ids)
+        if ids & self._deleting_contexts:
+            raise ConflictError("Conversation context is already being deleted")
+        self._deleting_contexts.update(ids)
+        try:
+            for context_id in ids:
+                if any(run.status not in TERMINAL_RUN_STATUSES
+                       or self.execution_in_progress(run.run_id)
+                       or run.lifecycle.get('cleanup') in {'pending', 'failed'}
+                       for run in self.store.current(context_id=context_id, summary=True)):
+                    raise ConflictError("Stop execution and resolve cleanup before deleting this conversation")
+            for context_id in ids:
+                for provider_id, agent_id in self.store.context_owners(context_id):
+                    provider = self._providers.get(provider_id)
+                    if provider is not None:
+                        await provider.delete_context(agent_id, context_id)
+            yield
+        finally:
+            self._deleting_contexts.difference_update(ids)
+
     async def cancel_agent_runs(self, agent_id: str) -> list[RunRecord]:
+        # Explicit Stop also revokes dependent work and side effects owned by
+        # terminal parents. This destructive operation must visit those owners.
         runs = self.list_runs(agent_id=agent_id)
         if not runs:
             return []
@@ -1078,7 +1123,7 @@ class RunManager:
 
     def _task_finished(self, run_id: str) -> None:
         self._runtime_tasks.pop(run_id, None)
-        execution_done = self._execution_done.get(run_id)
+        execution_done = self._execution_done.pop(run_id, None)
         if execution_done is not None:
             execution_done.set()
         # Safety net after task exit. Cleanup debt must still retain capacity;
@@ -1167,7 +1212,7 @@ class RunManager:
         return self.inactivity_timeout_seconds
 
     def _check_concurrency(self, card: Card) -> None:
-        if any(r.lifecycle.get('cleanup') in {'pending', 'failed'} for r in self.list_runs(agent_id=card.id)):
+        if self.store.has_cleanup_debt(card.id):
             raise RuntimeUnavailableError('Agent admission is closed until its pending Run cleanup is resolved')
         if (team := member_team(self.world, card)) is not None and team.config.get("paused"):
             raise RuntimeUnavailableError("Legion is paused; its members cannot start new Runs")
@@ -1181,7 +1226,7 @@ class RunManager:
 
     def _occupied_agent_runs(self, agent_id: str) -> list[RunRecord]:
         return [
-            self.get_run(run_id)
+            self.store.get(run_id, summary=True)
             for run_id, occupant_agent_id in self._occupied_runs.items()
             if occupant_agent_id == agent_id
         ]
@@ -1345,4 +1390,4 @@ class RunManager:
                 return current.caller_id, current.context_id
             if current.parent_run_id is None:
                 return None, None
-            current = self.get_run(current.parent_run_id)
+            current = self.store.get(current.parent_run_id, summary=True)
