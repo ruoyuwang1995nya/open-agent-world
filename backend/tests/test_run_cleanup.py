@@ -321,3 +321,41 @@ async def test_group_and_conversation_deletion_release_all_owned_contexts(tmp_pa
         assert set(released) == {(agent.id, first.id), (agent.id, second.id)}
     finally:
         services.close()
+
+
+@pytest.mark.asyncio
+async def test_context_deletion_rejects_created_run_with_reserved_capacity(tmp_path, monkeypatch):
+    from backend.errors import ConflictError
+    from backend.events.models import EventType
+    services = _services(tmp_path, RecordingProvider())
+    entered, release = asyncio.Event(), asyncio.Event()
+    starting = None
+    try:
+        manager = services.run_manager
+        agent = await services.create_card(CardCreate(type='agent'))
+        room = await services.create_card(CardCreate(type='conversation'))
+        session = await services.create_conversation_session(room.id, ConversationSessionCreate())
+        publish = type(manager)._publish_run
+
+        async def paused_publish(current, record, event_type):
+            if event_type == EventType.RUN_CREATED:
+                entered.set()
+                await release.wait()
+            return await publish(current, record, event_type)
+
+        monkeypatch.setattr(type(manager), '_publish_run', paused_publish)
+        starting = asyncio.create_task(manager.start_run(agent.id, 'admitted', context_id=session.id))
+        await asyncio.wait_for(entered.wait(), 2)
+        run, = manager.store.current(context_id=session.id)
+        assert run.status == RunStatus.CREATED and manager.holds_agent_slot(run.run_id)
+        with pytest.raises(ConflictError):
+            await services.delete_conversation_session(room.id, session.id)
+        release.set()
+        await starting
+        await manager.wait_execution(run.run_id)
+        await services.delete_conversation_session(room.id, session.id)
+    finally:
+        release.set()
+        if starting is not None:
+            await asyncio.gather(starting, return_exceptions=True)
+        services.close()

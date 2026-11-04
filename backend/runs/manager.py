@@ -641,8 +641,13 @@ class RunManager:
         self._deleting_contexts.update(ids)
         try:
             for context_id in ids:
-                if any(run.status not in TERMINAL_RUN_STATUSES
+                # A CREATED provenance record alone has no live execution
+                # ownership. Admission acquires capacity before its first await,
+                # so newly admitted Runs remain protected before RUNNING too.
+                if any(run.status in {RunStatus.RUNNING, RunStatus.WAITING}
+                       or self.holds_agent_slot(run.run_id)
                        or self.execution_in_progress(run.run_id)
+                       or run.lifecycle.get('execution') in {'running', 'closing'}
                        or run.lifecycle.get('cleanup') in {'pending', 'failed'}
                        for run in self.store.current(context_id=context_id, summary=True)):
                     raise ConflictError("Stop execution and resolve cleanup before deleting this conversation")
