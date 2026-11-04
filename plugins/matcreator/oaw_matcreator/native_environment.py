@@ -25,7 +25,8 @@ def environment_spec():
     requirements = tuple(str(Requirement(line.strip())) for line in REQUIREMENTS.read_text(encoding="utf-8").splitlines()
                          if line.strip() and not line.lstrip().startswith("#"))
     return PythonEnvironmentSpec("matcreator", "native", requirements, ">=3.12",
-        ("litellm", "google.adk.runners", "json_repair", "tiktoken"), Path(__file__).resolve())
+        ("litellm", "google.adk.runners", "json_repair", "tiktoken"), Path(__file__).resolve(),
+        lockfile=REQUIREMENTS.with_suffix(".lock"))
 
 
 def _manager(data_root=None):

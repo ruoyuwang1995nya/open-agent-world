@@ -101,6 +101,17 @@ installation formats are reported explicitly. Host worker providers prepare Pyth
 environments and verified executable artifacts. Arbitrary host npm or system-package
 installation commands are outside the declaration contract.
 
+Managed Python host workers can declare `lock = "requirements.lock"`, a complete
+hashed requirements file produced by `uv pip compile --universal --generate-hashes`.
+Generate it with the environment's minimum supported Python version using
+`--python-version`; retain platform and Python markers. Installation verifies hashes
+and checks the declared direct requirements against the locked
+closure. Lock contents participate in environment identity, and the ready receipt
+records resolved package versions. Regenerate the lock when changing worker
+requirements. Source distributions still require the platform's native build tools;
+their build-isolation dependencies are separate from this runtime lock. Sandbox
+lock installation remains unsupported.
+
 Host adapters execute in OAW's Python process through its public Plugin API.
 Their dependencies use an explicitly shared, version-compatible library layer:
 mandatory host packages are reused, and additional libraries ship as hash-locked
