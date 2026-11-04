@@ -13,12 +13,19 @@ use tauri_plugin_updater::UpdaterExt;
 
 fn backup_command(app: &tauri::AppHandle, mode: &str) -> Result<std::process::Output, String> {
     let root = super::payload(app).map_err(|e| e.to_string())?;
-    let python = root.join(if cfg!(windows) { "python/python.exe" } else { "python/bin/python3" });
+    let python = root.join(if cfg!(windows) {
+        "python/python.exe"
+    } else {
+        "python/bin/python3"
+    });
     let mut command = Command::new(python);
-    command.current_dir(&root).args(["-I", "-B", "launch.py", mode])
+    command
+        .current_dir(&root)
+        .args(["-I", "-B", "launch.py", mode])
         .env_remove("OPEN_AGENT_WORLD_DATA_ROOT")
         .env_remove("OPEN_AGENT_WORLD_PLUGIN_DIRS")
-        .stdout(Stdio::piped()).stderr(Stdio::piped());
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -142,7 +149,9 @@ async fn update(app: &tauri::AppHandle, quiet: bool) -> Result<(), String> {
         let _ = window.set_title("Open Agent World · Checking backup space / 检查备份空间");
     }
     let preflight = backup_command(app, "--backup-preflight");
-    if let Some(ref window) = window { let _ = window.set_title("Open Agent World"); }
+    if let Some(ref window) = window {
+        let _ = window.set_title("Open Agent World");
+    }
     preflight?; // Leave the running workspace available when space is insufficient.
     if !app.dialog().message("The update is verified. Save your drafts and finish active tasks before continuing. OAW will close, back up saved data, then install and restart.\n更新已验证。请先保存草稿并完成运行中的任务；继续后将关闭工作区、备份数据并安装重启。")
         .title("Open Agent World").buttons(MessageDialogButtons::OkCancel).blocking_show() { return Ok(()); }
