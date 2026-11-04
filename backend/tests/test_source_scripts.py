@@ -2,6 +2,7 @@
 from contextlib import nullcontext
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -297,7 +298,10 @@ def test_repeated_dev_starts_prepare_once_then_run_vite_and_propagate_failure(sc
     monkeypatch.setattr(dev, "backend_python", lambda root: python)
     monkeypatch.setattr(dev, "prerequisites", lambda **kw: {"node": "node", "npm": "npm"})
     monkeypatch.setattr(dev, "available_port", lambda port: port)
-    monkeypatch.setattr(sys, "argv", ["dev.py", "--profile", "fixture", "--plugin-path", "extra plugin"])
+    inherited = str(tmp_path / "configured pack")
+    monkeypatch.setenv("OPEN_AGENT_WORLD_PLUGIN_DIRS", inherited)
+    monkeypatch.setattr(sys, "argv", ["dev.py", "--profile", "fixture", "--plugin-path", "extra plugin",
+                                     "--plugin-path", "another pack", "--plugin-path", "extra plugin"])
     commands, children, stopped = [], [], []
     monkeypatch.setattr(dev.subprocess, "run", lambda command, **kwargs: commands.append(command))
     probes = []
@@ -307,6 +311,8 @@ def test_repeated_dev_starts_prepare_once_then_run_vite_and_propagate_failure(sc
     monkeypatch.setattr(dev.urllib.request, "build_opener", lambda *args: SimpleNamespace(open=probe))
 
     def popen(command, **kwargs):
+        assert kwargs["env"]["OPEN_AGENT_WORLD_PLUGIN_DIRS"].split(os.pathsep) == [
+            inherited, str(SCRIPTS.parent / "extra plugin"), str(SCRIPTS.parent / "another pack")]
         commands.append(command)
         code = 2 if command[0] == "node" else None
         process = SimpleNamespace(poll=lambda: code, returncode=code)
@@ -328,6 +334,7 @@ def test_repeated_dev_starts_prepare_once_then_run_vite_and_propagate_failure(sc
     assert commands[3][2:4] == ["--host", "127.0.0.1"]
     assert stopped[:2] == list(reversed(children[:2]))
     assert probes == ["http://127.0.0.1:8000/health/ready"] * 2
+    assert os.environ["OPEN_AGENT_WORLD_PLUGIN_DIRS"] == inherited
 
 
 def test_failed_preflight_never_launches_processes(scripts, monkeypatch, tmp_path):

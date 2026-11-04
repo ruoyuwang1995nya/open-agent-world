@@ -236,6 +236,7 @@ $backendError = Join-Path $runtimeDirectory "backend.err.log"
 
 $backend = $null
 $backendState = $null
+$previousPluginDirectories = $env:OPEN_AGENT_WORLD_PLUGIN_DIRS
 
 Push-Location $projectRoot
 try {
@@ -251,6 +252,10 @@ try {
         }
         $resolved.Path
     })
+    $pluginDirectories = @($previousPluginDirectories -split [IO.Path]::PathSeparator | Where-Object { $_ }) + $resolvedPluginPaths
+    if ($pluginDirectories.Count -gt 0) {
+        $env:OPEN_AGENT_WORLD_PLUGIN_DIRS = ($pluginDirectories | Select-Object -Unique) -join [IO.Path]::PathSeparator
+    }
     $backendPython = Initialize-BackendEnvironment -Root $projectRoot -DevelopmentProfile $Profile -AdditionalPlugins $resolvedPluginPaths
     # Recover a backend left by an earlier invocation. The recorded start time
     # prevents a recycled PID from causing an unrelated process to be killed.
@@ -344,5 +349,6 @@ finally {
         Stop-RecordedProcessTree (Get-ProcessRecord $backend.Id)
     }
     Remove-OwnedBackendState $backendState
+    $env:OPEN_AGENT_WORLD_PLUGIN_DIRS = $previousPluginDirectories
     Pop-Location
 }
