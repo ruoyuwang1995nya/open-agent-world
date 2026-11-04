@@ -19,6 +19,27 @@ afterEach(() => { cleanup(); useLegionWorkspace.getState().close(); useNodeSurfa
 const card: WorldCard = { id: "extension-card", type: "example.agent", name: "Extension", status: "idle",
   position: { x: 0, y: 0 }, size: { width: 300, height: 190 }, expanded: false, config: { effort: "default" } };
 
+it('observes new document events once across bounded event-window churn and unsubscribes', () => {
+  install('test.documents', { settings: 'view' });
+  useWorldStore.setState({ events: [] });
+  let props!: PluginViewProps;
+  vi.spyOn(registry, 'pluginView').mockReturnValue(((value: PluginViewProps) => { props = value; return null; }) as ReturnType<typeof registry.pluginView>);
+  render(<PluginSurface card={card} slot="settings" level="inspector" />);
+  const listener = vi.fn();
+  const stop = props.host.onDocumentChange(listener);
+  for (let index = 1; index <= 500; index++) act(() => useWorldStore.setState({ events: [{
+    id: `change-${index}`, type: 'state_changed', timestamp: 'now',
+    payload: { scope_kind: 'node_document', key: 'document', owner_id: card.id, revision: index },
+  }, ...useWorldStore.getState().events].slice(0, 160) }));
+  act(() => useWorldStore.setState({ socketState: 'live' }));
+  expect(listener).toHaveBeenCalledTimes(500);
+  expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: card.id, revision: 500 }));
+  stop();
+  act(() => useWorldStore.setState({ events: [{ id: 'after-unsubscribe', type: 'state_changed', timestamp: 'now',
+    payload: { scope_kind: 'node_document', key: 'document', owner_id: card.id, revision: 501 } }] }));
+  expect(listener).toHaveBeenCalledTimes(500);
+});
+
 it('suspends covered XRD graph canvases but keeps Legion panes and restores them on exit', () => {
   const canvas = { ...card, type: 'xrd.structure-canvas' };
   render(<><PluginSurface card={canvas} slot="settings" level="workspace"><p>Graph canvas</p></PluginSurface><WorkspaceSurfaceContext.Provider value={true}><PluginSurface card={canvas} slot="settings" level="workspace"><p>Legion canvas</p></PluginSurface></WorkspaceSurfaceContext.Provider></>);

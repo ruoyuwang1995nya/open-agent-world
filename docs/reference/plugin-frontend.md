@@ -83,6 +83,14 @@ internal components. UI extensions are trusted application code, not a security
 sandbox; error boundaries isolate rendering and module-load errors, not arbitrary
 asynchronous side effects.
 
+`updateConfig(patch, nodeId?)` defaults to the current card; an explicit node ID
+uses the same host edit action and backend authorization. Domain workflows should
+live in their Pack and use these generic document, configuration, and navigation
+capabilities. Packs can export named `services` beside `views`, consumed through
+`loadPackFrontendService(owner, name)` after the host checks that the owner is
+loaded. XRD's input interpretation and new-workflow import use this boundary;
+the existing XRD host callbacks remain available to installed views.
+
 Vite discovers immediate `plugins/*/frontend` projects at startup/build time.
 Each project owns `package.json`, a lockfile and a build script using the public
 SDK. Development and production both load that independent build artifact;
