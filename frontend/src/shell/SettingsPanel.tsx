@@ -18,6 +18,7 @@ import { DeepLSettings } from "./DeepLSettings";
 import { EnvironmentVariablesEditor, environmentSecretUpdates, environmentFolderUpdates, environmentVariablesFromValue, environmentVariablesToValue, type EnvironmentVariableRow } from "../cards/ExecutionConfiguration";
 import { isHosted } from '../auth/hostedSession';
 import { AppearanceSettings } from './AppearanceSettings';
+import { StorageUsage } from './StorageUsage';
 
 export function SettingsPanel() {
   const { locale, setLocale } = useLocale();
@@ -196,6 +197,7 @@ export function SettingsPanel() {
             }}>{t("Cancel scheduled move")}</button>}
             {storage.last_error && <p role="alert" className="settings-error">{t("Migration did not complete. The original location remains active.")} {storage.last_error}</p>}
             {storage.previous_path && <label className="field-label"><span>{t("Retained backup (before the move)")}</span><input readOnly value={storage.previous_path} /></label>}
+            <StorageUsage />
           </>}
           {error && <button type="button" className="secondary-button" disabled={busy} onClick={() => { setError(""); setStorageRetry(value => value + 1); }}>{t("Reload storage settings")}</button>}
         </div> : <div className="settings-form" onChangeCapture={() => setSandboxSaved(false)}>

@@ -887,6 +887,14 @@ export const worldApi = {
     return request("/settings/storage");
   },
 
+  inspectStorage(): Promise<StorageUsage> {
+    return request("/settings/storage/usage", { method: "POST" });
+  },
+
+  deleteUpdateBackup(name: string): Promise<{ removed: string }> {
+    return request(`/settings/storage/backups/${encodeURIComponent(name)}`, { method: "DELETE" });
+  },
+
   saveStorageSettings(targetPath: string | null, expectedRevision: number): Promise<StorageSettings> {
     return request("/settings/storage", { method: "PUT", body: JSON.stringify({ target_path: targetPath, expected_revision: expectedRevision }) });
   },
@@ -1144,4 +1152,11 @@ export interface StorageSettings {
   revision: number;
   editable: boolean;
   managed_by: string;
+}
+
+export interface StorageUsage {
+  categories: { user_data: number; managed: number; temporary: number; backups: number };
+  reclaimable_bytes: number;
+  measured_at: string;
+  backups: { name: string; path: string; created_at: string; size_bytes: number; removable: boolean }[];
 }
