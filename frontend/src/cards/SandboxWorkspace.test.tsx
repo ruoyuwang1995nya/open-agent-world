@@ -41,6 +41,7 @@ describe("Sandbox workspace interaction", () => {
     });
     vi.spyOn(worldApi, 'workspaceContext').mockResolvedValue({ key: 'test-root', directory: '', label: 'Test workspace', scope_type: 'session', scope_id: 'default', session_id: 'default', group_id: 'default', conversation_id: null, sandbox_id: card.id });
     previewFile = async path => ({ state: "text", text: `Contents of ${path}` });
+    vi.spyOn(worldApi, "fileTransferPolicy").mockResolvedValue({ max_file_bytes: 512 * 1024 * 1024, chunk_bytes: 256 * 1024 });
     vi.spyOn(worldApi, "getSandbox").mockResolvedValue(info);
     vi.spyOn(worldApi, "getSandboxRuntimes").mockResolvedValue({
       default_runtime: "wsl:Ubuntu",
