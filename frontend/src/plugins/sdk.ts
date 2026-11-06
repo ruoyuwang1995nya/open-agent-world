@@ -183,7 +183,7 @@ export interface PluginViewProps {
     /** Absent for state.mode=none. The host owns namespace and lifecycle. */
     state?: CardStateStore;
     /** Present only when the developer permits a choice; null restores its default. */
-    setDataPersistence?: (value: "shared" | "session" | null) => Promise<void>;
+    setDataPersistence?: (value: "shared" | "session" | "group" | null) => Promise<void>;
     /** Present only in a deployed Workspace. Reuse the view and hide engineering controls. */
     deployment?: import('../workspace/WorkspaceAccess').PluginDeploymentAccess;
     /** Human configuration of this Environment/Sandbox card. Plugin API 1.42.
@@ -214,6 +214,8 @@ export interface PluginViewProps {
     documentAction(action: string, arguments_: Record<string, unknown>, expectedRevision?: number, nodeId?:string): Promise<{ value: unknown; revision: number }>;
     delegationAction(action: 'collect' | 'wait' | 'inspect' | 'stop' | 'cancel_defer', arguments_: Record<string, unknown>): Promise<Record<string, unknown>>;
     resourceAction(action: string, arguments_: Record<string, unknown>, confirm?: boolean): Promise<Record<string, unknown>>;
+    /** Binary files use host-owned streaming leases, outside resource-action JSON. */
+    resourceFileAction(action: string, arguments_: Record<string, unknown>, files: Record<string, File>, confirm?: boolean): Promise<Record<string, unknown>>;
     listCards(traits?: string[]): Promise<WorldCard[]>;
     readDocument(nodeId?: string): Promise<{ value: unknown; revision: number }>;
     transform(operation: string, request: Record<string, unknown>): Promise<Record<string, unknown>>;

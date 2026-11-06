@@ -1,5 +1,7 @@
 """markdown.py's tabular engines in isolation: CSV/TSV/XLSX -> a real markdown table."""
 import io
+import builtins
+from importlib.machinery import ModuleSpec
 
 import pytest
 
@@ -72,6 +74,46 @@ def test_a_corrupt_xlsx_reports_a_knowledge_error_not_a_crash():
     with pytest.raises(KnowledgeError):
         to_markdown(b"not a real workbook", "broken.xlsx",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+def test_large_xlsx_uses_bounded_private_file_handoff_instead_of_json_bytes(tmp_path, monkeypatch):
+    import json
+    import zipfile
+    from pathlib import Path
+    from oaw_knowledge_base import markdown
+
+    path = tmp_path / 'large.xlsx'
+    path.write_bytes(_xlsx_bytes({'Results': [['Sample', 'Value'], ['A', 3.2]]}))
+    with zipfile.ZipFile(path, 'a') as archive, archive.open('padding.bin', 'w') as padding:
+        for _ in range(132):
+            padding.write(b'x' * markdown.FILE_CHUNK_BYTES)
+    run = markdown.subprocess.run
+    staged = []
+
+    def inspect_handoff(*args, **kwargs):
+        request = json.loads(kwargs['input'])
+        assert 'data' not in request and len(kwargs['input']) < 16384
+        staged.append(Path(request['path']))
+        assert staged[-1].stat().st_size == path.stat().st_size
+        return run(*args, **kwargs)
+
+    monkeypatch.setattr(markdown.subprocess, 'run', inspect_handoff)
+    with path.open('rb') as stream:
+        text, _, _ = to_markdown(stream, path.name, '')
+        assert not stream.closed
+    assert '| A | 3.2 |' in text
+    assert staged and all(not path.exists() for path in staged)
+
+
+def test_tabular_row_budget_stops_reading_before_materializing_the_input():
+    from oaw_knowledge_base import markdown
+
+    def rows():
+        for index in range(markdown.MAX_TABULAR_ROWS + 1):
+            assert index < markdown.MAX_TABULAR_ROWS, 'Converter read beyond its row budget'
+            yield [index]
+
+    assert markdown._rows_to_markdown_table(rows())
 
 
 class _FakeResponse:
@@ -178,6 +220,19 @@ def test_image_detected_by_extension_when_media_type_is_generic(monkeypatch):
         "data:image/png;base64,")
 
 
+@pytest.mark.parametrize('installed', [True, False])
+def test_available_engines_never_loads_native_pdf_dependencies(monkeypatch, installed):
+    from oaw_knowledge_base import markdown
+    monkeypatch.setattr(markdown, 'find_spec', lambda name: ModuleSpec(name, loader=None) if installed else None)
+    original = builtins.__import__
+    def guarded_import(name, *args, **kwargs):
+        if name.split('.')[0] in {'pymupdf4llm', 'pymupdf', 'numpy'}:
+            raise AssertionError('Engine discovery must not initialize native PDF dependencies')
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', guarded_import)
+    assert ('pymupdf4llm' in available_engines()) is installed
+
+
 def test_available_engines_reports_vision_only_when_both_env_vars_are_set(monkeypatch):
     monkeypatch.delenv("OAW_VISION_API_KEY", raising=False)
     monkeypatch.delenv("OAW_VISION_BASE_URL", raising=False)
@@ -188,6 +243,27 @@ def test_available_engines_reports_vision_only_when_both_env_vars_are_set(monkey
 
     monkeypatch.setenv("OAW_VISION_BASE_URL", "https://vision.example/v1")
     assert "vision" in available_engines()
+
+
+def test_xlsx_conversion_keeps_native_imports_out_of_the_host(monkeypatch):
+    from oaw_knowledge_base import markdown
+    data = _xlsx_bytes({'Results': [['Sample', 'Value'], ['A', 3.2]]})
+    original = builtins.__import__
+    def guarded_import(name, *args, **kwargs):
+        if name.split('.')[0] in {'openpyxl', 'numpy', 'pymupdf4llm', 'pymupdf'}:
+            raise AssertionError('Native conversion dependencies belong in the worker process')
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', guarded_import)
+    assert '| A | 3.2 |' in markdown.to_markdown(data, 'results.xlsx', '')[0]
+
+
+def test_native_conversion_timeout_is_actionable_and_keeps_the_source_retryable(monkeypatch):
+    from oaw_knowledge_base import markdown
+    def expired(*args, **kwargs):
+        raise markdown.subprocess.TimeoutExpired(args[0], kwargs['timeout'])
+    monkeypatch.setattr(markdown.subprocess, 'run', expired)
+    with pytest.raises(KnowledgeError, match='source is retained; retry its conversion'):
+        markdown.to_markdown(b'xlsx fixture', 'results.xlsx', '')
 
 
 class _Connection:

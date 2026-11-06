@@ -21,6 +21,22 @@ Marketplace previews read its packaging, accent color and card count without
 executing Pack code or loading arbitrary artwork URLs. Codex demonstrates this
 with `src/oaw_codex/pack.json` and premium packaging.
 
+For the same first-card icon and Pack artwork in Store previews, declare the
+existing runtime image files explicitly:
+
+```toml
+[distribution.preview]
+icon = "bot"
+icon_asset = "src/my_pack/assets/logo.svg"
+artwork_asset = "src/my_pack/assets/cover.png"
+```
+
+The image paths are optional and relative to the project. The builder embeds a
+code-free `manifest.preview` snapshot; images must be self-contained, supported
+image formats, at most 256 KiB each. Store and Library use the same `PackSurface`.
+Archives containing this new snapshot require an OAW Host that supports it;
+omitting it preserves the previous manifest shape.
+
 Default setup prepares Core, bundled Packs and optional runtime SDKs. Use
 `--core-only` for Core alone, or `--plugin-path` for selected projects. Schema 3 source loading does not require
 editable installation. The setup scripts prepare dependencies in the same `--profile`
@@ -40,7 +56,7 @@ name = "Research"
 
 [compatibility]
 plugin_api = "1.35"
-oaw = ">=0.1.0,<1"
+oaw = ">=0.1.0"
 
 [plugin]
 owner = "example.research"
@@ -194,8 +210,15 @@ working-directory scripts, `-c`, `-m` and literal arguments. Shell commands inhe
 the private environment's `PATH`; explicit paths inside shell text retain normal
 shell semantics. Direct custom Python interpreter paths/versions and `-S` are
 rejected because they bypass the selected environment. `python_environment=none`
-cannot be combined with declared profiles. AtomSculptor uses this mechanism for
-its modelling commands instead of adding libraries to shared Sandbox Python.
+cannot be combined with runtime-declared profiles. Declarations marked
+`management="legacy-shared"` use the existing `PluginEnvironmentBootstrap` and
+read-only shared Sandbox Python instead of creating a private environment. Skill
+references preserve their authorization and declaration checks on this path.
+AtomSculptor uses shared profiles for base modelling and core Skills, so a new
+Sandbox reuses the host-prepared platform environment. Its optional Materials
+Project and RDKit Skills retain private profiles. When shared defaults compose
+with a private Skill profile, their requirements are included in that private
+environment; they do not inherit installed shared packages.
 
 Durable job providers can declare their own `sandbox_environments=("bohr",)`
 on `BackgroundJobProvider`. The host binds these profiles when the provider calls

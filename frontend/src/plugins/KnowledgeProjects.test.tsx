@@ -28,19 +28,20 @@ const RESULT = { id: "result-a", project_id: PROJECT.id, project_name: PROJECT.n
   sources: [{ source_id: "file-a", filename: "report.md", relative_path: "report.md" }], updated_at: "2026-10-27T00:00:00Z" };
 type Handler = (action: string, args: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>;
 function setup(handler: Handler = async () => undefined, options: { request?: ReturnType<typeof vi.fn>; host?: Record<string, unknown>; deployed?: boolean; agent?: { id: string; name: string } } = {}) {
-  const action = vi.fn(async (name: string, args: Record<string, unknown>) => await handler(name, args)
+  const action = vi.fn(async (name: string, args: Record<string, unknown>, _confirm?: boolean) => await handler(name, args)
     ?? (name === "projects" ? args.project_id ? { project: { ...PROJECT, files: FILES } } : { projects: [PROJECT] }
       : name === "spaces" ? { spaces: [SPACE] } : name === "projections" ? args.operation === "get" ? { projection: RESULT } : { projections: [] } : {}));
   const request = options.request ?? vi.fn(async () => ({}));
+  const fileAction = vi.fn((name: string, args: Record<string, unknown>, _files: Record<string, File>, confirm?: boolean) => action(name, args, confirm));
   function View() {
     const [tab, setTab] = useState<ProjectTab>("projects");
     return <><nav>{(["projects", "spaces", "results"] as const).map(item => <button key={item} onClick={() => setTab(item)}>{item}</button>)}</nav>
-      <ProjectWorkspace host={{ resourceAction: action, ...options.host } as unknown as PluginViewProps["host"]} cardId="kb" tab={tab} visible onTab={setTab}
+      <ProjectWorkspace host={{ resourceAction: action, resourceFileAction: fileAction, ...options.host } as unknown as PluginViewProps["host"]} cardId="kb" tab={tab} visible onTab={setTab}
         deployed={!!options.deployed} selectedModel="model-a" modelSelect={<span>model-a</span>} agent={options.agent} version={0}
         onSourceOpened={() => undefined} onChanged={async () => undefined} request={request} /></>;
   }
   render(<View />);
-  return { action, request };
+  return { action, fileAction, request };
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
@@ -48,9 +49,10 @@ it("stages a folder locally and preserves its paths when importing the named pro
   const preview = { token: "preview-1", grouping: "single", depth: 1,
     files: [{ id: "file-1", relative_path: "root/A/report.md", filename: "report.md", size: 10, project_key: "root/A" }],
     projects: [{ key: "root/A", name: "A", file_count: 1 }] };
-  const { action } = setup(async name => name === "project_import_preview" ? preview
+  const { action, fileAction } = setup(async name => name === "project_import_preview" ? preview
     : name === "project_import_commit" ? { projects: [PROJECT], source_ids: ["file-1"] } : undefined);
   const file = new File(["# Report"], "report.md", { type: "text/markdown" });
+  vi.stubGlobal("FileReader", class { constructor() { throw new Error("Project files must not be encoded as data URLs"); } });
   Object.defineProperty(file, "webkitRelativePath", { value: "root/A/report.md" });
   fireEvent.click(within(screen.getByRole("group", { name: "Projects" })).getByRole("button", { name: "New project" }));
   fireEvent.change(screen.getByLabelText("Project folder"), { target: { files: [file] } });
@@ -60,6 +62,9 @@ it("stages a folder locally and preserves its paths when importing the named pro
   expect(action.mock.calls.some(([name]) => ["project_import_preview", "project_import_commit", "ingest"].includes(name))).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "Import and convert" }));
   await waitFor(() => expect(action).toHaveBeenCalledWith("project_import_preview", expect.objectContaining({ files: [expect.objectContaining({ relative_path: "root/A/report.md" })], grouping: "single" }), undefined));
+  expect(fileAction).toHaveBeenCalledWith("project_import_preview", expect.objectContaining({
+    files: [expect.objectContaining({ file_key: "file0" })] }), { file0: file });
+  expect(JSON.stringify(fileAction.mock.calls[0][1])).not.toContain("content_base64");
   await waitFor(() => expect(action).toHaveBeenCalledWith("project_import_commit", { token: "preview-1", grouping: "single", depth: 1, auto_process: true,
     projects: [{ key: "root/A", name: "Reports" }] }, undefined));
 });

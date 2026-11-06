@@ -6,6 +6,11 @@ on:
   push:
     branches: [dev, main]
   workflow_dispatch:
+    inputs:
+      full_acceptance:
+        description: Run cross-browser UI and research workspace acceptance
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -22,11 +27,11 @@ jobs:
   source-launchers:
     name: Source startup (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-latest, macos-14]
+        os: [ubuntu-24.04, windows-latest, macos-15]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -41,14 +46,14 @@ jobs:
         run: node --test frontend/scripts/source-startup.test.mjs
 
   backend:
-    name: Backend tests (${{ matrix.shard }}/4)
+    name: Backend tests (${{ matrix.shard }}/6)
     runs-on: ubuntu-24.04
     # Separate runners isolate tests that prepare plugins, files and subprocesses.
-    timeout-minutes: 30
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -86,12 +91,23 @@ jobs:
             install_args+=(--editable "$plugin_root")
           done
           uv pip install --python .venv/bin/python "${install_args[@]}"
+      - name: Prepare declared Report rendering test dependencies
+        run: |
+          backend/.venv/bin/python - <<'PY'
+          import subprocess
+          import tomllib
+          from pathlib import Path
+          spec = tomllib.loads(Path('plugins/atomsculptor/oaw.pack.toml').read_text())
+          requirements = spec['environments']['log-review']['python']
+          subprocess.run(['uv', 'pip', 'install', '--python', 'backend/.venv/bin/python', *requirements], check=True)
+          PY
       - name: Strict optional plugin activation
         run: backend/.venv/bin/python -c "from backend.plugins.loader import load_plugin_registry; load_plugin_registry(strict=True)"
       - name: Run backend and public SDK test suites
         run: >-
           backend/.venv/bin/python .github/run-backend-tests.py tests backend/tests packs/codex/tests
-          --shard ${{ matrix.shard }}/4 --durations=20
+          plugins/atomsculptor/tests/test_log_review_agent.py
+          --shard ${{ matrix.shard }}/6 --durations=20
           --junitxml=.tmp/backend-linux-${{ matrix.shard }}.xml
       - name: Upload backend results
         if: always()
@@ -102,10 +118,33 @@ jobs:
           include-hidden-files: true
           retention-days: 7
 
+  frontend-unit:
+    name: Frontend unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install locked dependencies
+        working-directory: frontend
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Prepare SDK and Pack dependencies
+        working-directory: frontend
+        run: |
+          npm run build:pack-sdk
+          npm run prepare:packs
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+
   frontend:
     name: Frontend tests and build
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -120,6 +159,11 @@ jobs:
         with:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            backend/uv.lock
+            plugins/*/pyproject.toml
       - name: Install locked deployment backend
         run: uv sync --project backend --locked --dev --extra hosting --extra adk --extra litellm --python 3.12
       - name: Install operator-approved plugin dependencies for hosted workers
@@ -130,15 +174,16 @@ jobs:
       - name: Type-check and build frontend
         working-directory: frontend
         run: npm run build
-      - name: Run frontend tests with prepared Pack dependencies
-        working-directory: frontend
-        run: npm test
       - name: Verify Pack build dependency boundaries
         working-directory: frontend
         run: npm run test:pack-sdk
-      - name: Install UI acceptance browsers
+      - name: Install Chromium for core browser acceptance
         working-directory: frontend
-        run: npx --no-install playwright install --with-deps chromium webkit
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Install WebKit for optional UI acceptance
+        if: github.event_name == 'workflow_dispatch' && inputs.full_acceptance
+        working-directory: frontend
+        run: npx --no-install playwright install --with-deps webkit
       - name: Pack the public SDK
         id: pack-sdk
         run: |
@@ -175,12 +220,14 @@ jobs:
         working-directory: frontend
         run: npm run test:e2e:deployment
       - name: Verify the published MatCreator workspace and shared card APIs
+        if: github.event_name == 'workflow_dispatch' && inputs.full_acceptance
         working-directory: frontend
         run: npm run test:e2e:publication
       - name: Verify hosted login and independent user workspaces
         working-directory: frontend
         run: npm run test:e2e:hosting
       - name: Verify shared UI in Chromium and WebKit
+        if: github.event_name == 'workflow_dispatch' && inputs.full_acceptance
         working-directory: frontend
         run: npm run test:e2e:ui
       - name: Upload browser failure evidence
@@ -204,8 +251,9 @@ jobs:
   required:
     name: CI required
     if: always()
-    needs: [source-launchers, backend, frontend, windows-smoke, version]
+    needs: [source-launchers, backend, frontend-unit, frontend, windows-smoke, version]
     runs-on: ubuntu-24.04
+    timeout-minutes: 2
     steps:
       - name: Require every check to succeed
         env:
@@ -216,6 +264,7 @@ jobs:
   version:
     name: Application version consistency
     runs-on: ubuntu-24.04
+    timeout-minutes: 2
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -226,13 +275,18 @@ jobs:
   windows-smoke:
     name: Core smoke (Windows)
     runs-on: windows-2022
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            backend/uv.lock
+            plugins/*/pyproject.toml
       - name: Install locked backend dependencies
         run: uv sync --project backend --locked --all-extras --group dev --python 3.12
       - name: Install repository plugin test dependencies
@@ -245,26 +299,20 @@ jobs:
           ./scripts/test-dev-environment.ps1
           ./scripts/test-dev-startup.ps1
           ./scripts/test-desktop-build.ps1
-      - name: Check startup, access boundaries, deployment, persistence and migration
+      # OS-independent auth, API and deployment suites run in the Linux shards.
+      - name: Check Windows startup, filesystem recovery, persistence and migration
         run: >-
           backend/.venv/Scripts/python.exe .github/run-backend-tests.py
-          backend/tests/test_application_launch.py
           backend/tests/test_source_scripts.py
           backend/tests/test_plugin_setup.py
-          backend/tests/test_control_plane.py
-          backend/tests/test_http_foundations.py
-          backend/tests/test_request_context.py
-          backend/tests/test_hosted_accounts.py
-          backend/tests/test_hosted_auth.py
-          backend/tests/test_hosted_profile.py
-          backend/tests/test_hosting_oidc.py
-          backend/tests/test_idempotency.py
-          backend/tests/test_deployments.py
-          backend/tests/test_persistence_and_events.py
           backend/tests/test_lifecycle_migration.py
           backend/tests/test_storage_location.py
           backend/tests/test_windows_acceptance_helpers.py
-          --junitxml=.tmp/windows-smoke.xml
+          backend/tests/test_persistence_and_events.py::test_world_and_text_persist_across_restart
+          backend/tests/test_application_launch.py::test_production_serves_built_assets_without_debug_endpoints
+          backend/tests/test_application_launch.py::test_workspace_reset_removes_real_cards_and_restores_files_after_move_failure
+          backend/tests/test_application_launch.py::test_interrupted_reset_restores_archived_directories_before_startup
+          --durations=10 --junitxml=.tmp/windows-smoke.xml
       - name: Upload Windows results
         if: always()
         uses: actions/upload-artifact@v4

@@ -3,7 +3,7 @@ import { ArrowLeft, Search } from 'lucide-react';
 import { apiErrorMessage, worldApi } from '../api/client';
 import { t } from '../i18n';
 import type { PackInstallations, StoreDetail, StorePack, StorePage, StoreState, StoreVersion } from '../types/packs';
-import { PackPlanDetails } from './PackDependencies';
+import { packBlockerMessage, PackPlanDetails } from './PackDependencies';
 import { packOperationPending, PackOperations } from './PackOperations';
 import { StorePackPreview } from './StorePackPreview';
 import './packPresentation.css';
@@ -17,8 +17,8 @@ function InstallationStatus({ state }: { state: StoreState }) {
   </span>;
 }
 
-export function PackStore({ installations, onInstalled }: {
-  installations?: PackInstallations; onInstalled?: (state: StoreState) => void;
+export function PackStore({ installations, onInstalled, readOnly = false }: {
+  installations?: PackInstallations; onInstalled?: (state: StoreState) => void; readOnly?: boolean;
 }) {
   const [query, setQuery] = useState('');
   const [page, setPage] = useState<StorePage>();
@@ -28,6 +28,7 @@ export function PackStore({ installations, onInstalled }: {
   const [selected, setSelected] = useState<string>();
   const [detail, setDetail] = useState<StoreDetail>();
   const [version, setVersion] = useState<StoreVersion>();
+  const [versionChoice, setVersionChoice] = useState<string>();
   const [detailError, setDetailError] = useState('');
   const [detailRevision, setDetailRevision] = useState(0);
   const [installError, setInstallError] = useState('');
@@ -51,7 +52,7 @@ export function PackStore({ installations, onInstalled }: {
   }, [query, revision]);
 
   useEffect(() => {
-    setDetail(undefined); setVersion(undefined); setDetailError(''); setInstallError('');
+    setDetail(undefined); setVersion(undefined); setVersionChoice(undefined); setDetailError(''); setInstallError('');
     if (!selected) return;
     const controller = new AbortController();
     void (async () => {
@@ -60,14 +61,25 @@ export function PackStore({ installations, onInstalled }: {
         if (controller.signal.aborted) return;
         setDetail(result);
         const candidate = result.available_version ?? result.latest_version;
-        if (candidate) {
-          const metadata = await worldApi.getStoreVersion(selected, candidate, controller.signal);
-          if (!controller.signal.aborted) setVersion(metadata);
-        }
+        if (candidate) setVersionChoice(candidate);
       } catch (cause) { if (!controller.signal.aborted) setDetailError(apiErrorMessage(cause)); }
     })();
     return () => controller.abort();
   }, [selected, detailRevision]);
+
+  useEffect(() => {
+    setVersion(undefined); setInstallError('');
+    if (!selected || detail?.id !== selected || !versionChoice) return;
+    const controller = new AbortController();
+    setDetailError('');
+    worldApi.getStoreVersion(selected, versionChoice, controller.signal).then(metadata => {
+      if (!controller.signal.aborted) {
+        setVersion(metadata);
+        setInstalled(current => { const next = { ...current }; delete next[selected]; return next; });
+      }
+    }).catch(cause => { if (!controller.signal.aborted) setDetailError(apiErrorMessage(cause)); });
+    return () => controller.abort();
+  }, [selected, detail?.id, versionChoice, detailRevision]);
 
   const loadMore = async () => {
     if (!page?.next_cursor || loading) return;
@@ -82,7 +94,7 @@ export function PackStore({ installations, onInstalled }: {
     finally { if (!controller.signal.aborted) setLoading(false); }
   };
   const install = async (pack: StorePack) => {
-    if (!pack.available_version || installRequest.current) return;
+    if (readOnly || !pack.available_version || installRequest.current) return;
     const controller = new AbortController(); installRequest.current = controller;
     setInstalling(pack.id); setInstallError('');
     try {
@@ -94,14 +106,39 @@ export function PackStore({ installations, onInstalled }: {
     } catch (cause) { if (!controller.signal.aborted) setInstallError(apiErrorMessage(cause)); }
     finally { if (!controller.signal.aborted) { setInstalling(undefined); installRequest.current = undefined; } }
   };
-  const merged = (pack: StorePack): StorePack => ({ ...pack, ...installed[pack.id] });
-  const action = (pack: StorePack) => {
-    const pending = installations?.operations?.some(item => item.pack_id === pack.id && packOperationPending(item));
-    const selectedVersion = installations?.versions.some(item => item.id === pack.id && item.version === pack.available_version && item.selected);
-    return <button className="secondary-button" disabled={Boolean(installing) || pending || selectedVersion || !pack.can_install || Boolean(version?.plan?.blockers.length)}
-      onClick={() => void install(pack)}>{installing === pack.id || pending ? t('Installing') : selectedVersion || !pack.can_install && pack.installed_version ? t('Installed') : pack.update_available ? t('Update') : t('Get')}</button>;
+  const merged = (pack: StorePack): StorePack => {
+    const recent = installed[pack.id];
+    if (!recent) return pack;
+    if (recent.available_version === pack.available_version) return { ...pack, ...recent };
+    return { ...pack, installed_version: recent.installed_version, loaded_version: recent.loaded_version,
+      restart_required: recent.restart_required };
   };
-  const shown = detail && merged(detail);
+  const action = (pack: StorePack) => {
+    if (readOnly) return <p>{t('Pack installation is managed by your hosting administrator.')}</p>;
+    const pending = installations?.operations?.find(item => item.pack_id === pack.id && item.version === pack.available_version && packOperationPending(item));
+    const selectedVersion = installations?.versions.some(item => item.id === pack.id && item.version === pack.available_version && item.selected)
+      || pack.installed_version === pack.available_version && !pack.can_install;
+    const blockers = version?.plan?.blockers ?? [];
+    const unavailable = !selectedVersion && (!pack.can_install || blockers.length > 0);
+    const waiting = !selectedVersion && (Boolean(installing) || Boolean(pending));
+    const downloading = installing === pack.id && !pending && !selectedVersion;
+    const message = installing && installing !== pack.id ? t('Another Pack is installing. Wait for it to finish.')
+      : downloading ? t('Getting the Pack ({size} MB)…', { size: ((version?.size_bytes ?? 0) / 1024 / 1024).toFixed(1) })
+      : waiting ? t('Preparing environments')
+      : unavailable && !blockers.length ? t('This version cannot be installed on this host.') : '';
+    return <>
+      <button className="secondary-button" disabled={Boolean(waiting || selectedVersion || unavailable)}
+        aria-describedby={blockers.length || message ? 'store-install-reason' : undefined}
+        onClick={() => void install(pack)}>{downloading ? t('Getting Pack') : waiting ? t('Installing') : selectedVersion ? t('Installed') : unavailable ? t('Unavailable') : pack.update_available ? t('Update') : t('Get')}</button>
+      {(blockers.length > 0 || message) && <div id="store-install-reason">
+        {blockers.length > 0 && <ul className="pack-action-error" role="alert">{blockers.map(reason => <li key={reason}>{packBlockerMessage(reason)}</li>)}</ul>}
+        {message && <p role="status">{message}</p>}
+      </div>}
+    </>;
+  };
+  const shown = detail && merged({ ...detail, ...version });
+  const versionOptions = detail ? [...new Set([detail.available_version ?? detail.latest_version, ...detail.versions,
+    ...installations?.versions.filter(item => item.id === detail.id).map(item => item.version) ?? []].filter((value): value is string => Boolean(value)))] : [];
 
   return <section className="pack-store" aria-label={t('Pack Store')}>
     <PackOperations operations={installations?.operations} />
@@ -118,18 +155,22 @@ export function PackStore({ installations, onInstalled }: {
             {shown.summary && <p className="pack-detail-summary">{shown.summary}</p>}
           </div>
         </header>
-        <aside className="pack-detail-panel" aria-label={t('Install Pack')}>
-          <div className="pack-detail-panel-heading"><h4>{t('Install Pack')}</h4><span className="pack-tag">.oawpack</span></div>
+        <aside className="pack-detail-panel" aria-label={t(readOnly ? 'Pack details' : 'Install Pack')}>
+          <div className="pack-detail-panel-heading"><h4>{t(readOnly ? 'Pack details' : 'Install Pack')}</h4><span className="pack-tag">.oawpack</span></div>
+          {versionOptions.length > 1 && <label className="field-label"><span>{t('Version')}</span><select aria-label={t('Version')} value={versionChoice ?? ''} onChange={event => { setVersion(undefined); setVersionChoice(event.target.value); }}>
+            {versionOptions.map(value => <option key={value} value={value}>v{value}</option>)}
+          </select></label>}
           {version && <><dl className="pack-detail-facts">
-            <dt>{t('Version')}</dt><dd><span className="pack-tag pack-version-tag">v{version.version}</span></dd>
+            {versionOptions.length <= 1 && <><dt>{t('Version')}</dt><dd><span className="pack-tag pack-version-tag">v{version.version}</span></dd></>}
             <dt>{t('OAW compatibility')}</dt><dd><span className="pack-tag">{version.manifest.compatibility.oaw}</span></dd>
           </dl><InstallationStatus state={shown} />{action(shown)}</>}
           {!version && !detailError && shown.latest_version && <p role="status">{t('Loading…')}</p>}
           {!shown.latest_version && <p>{t('No version available')}</p>}
+          {installError && <p role="alert" className="pack-action-error">{t(installError)}</p>}
         </aside>
         <div className="pack-detail-body">
           {shown.description && <section className="pack-detail-section"><h4>{t('About this Pack')}</h4><p className="pack-detail-description">{shown.description}</p></section>}
-          {version?.plan && <div className="pack-detail-section"><PackPlanDetails plan={version.plan} /></div>}
+          {version?.plan && <div className="pack-detail-section"><PackPlanDetails plan={version.plan} showBlockers={false} /></div>}
           {version && !version.plan && <div className="pack-detail-requirements">
             <section className="pack-detail-section"><h4>{t('Pack dependencies')}</h4><div className="pack-value-tags">{version.manifest.dependencies.packs.length
               ? version.manifest.dependencies.packs.map(item => <span className="pack-tag" key={item.id}>{item.id} {item.version}</span>) : <span className="pack-empty-value">{t('None')}</span>}</div></section>
@@ -157,7 +198,6 @@ export function PackStore({ installations, onInstalled }: {
       {!loading && !error && page?.items.length === 0 && <p>{t('No matching packs')}</p>}
       {page?.next_cursor && !error && <button className="secondary-button" disabled={loading} onClick={() => void loadMore()}>{t('Load more')}</button>}
     </>}
-    {installError && <p role="alert" className="library-error">{t(installError)}</p>}
     {Object.values(installed).some(state => state.restart_required) && <p role="status">{t('Restart OAW to activate Pack changes.')}</p>}
   </section>;
 }

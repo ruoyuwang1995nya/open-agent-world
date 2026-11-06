@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from packaging.version import InvalidVersion, Version
 
 from backend.api.dependencies import get_services
-from backend.api.packs import checked, mutation_request, prepare_and_install
+from backend.api.packs import archive_body, checked, mutation_request, prepare_and_install
 from backend.packs.marketplace import Identity, MarketplaceError, PackId
 
 router = APIRouter(prefix="/store/packs", tags=["store"])
@@ -52,6 +52,17 @@ def local_state(services, pack_id, available_version, snapshot=None):
 
 def listing(services, value, snapshot=None):
     return {**value.model_dump(), **local_state(services, value.id, value.latest_version, snapshot)}
+
+
+def installation_plan(services, metadata):
+    from backend.packs.planning import plan
+    try:
+        result = plan(services.pack_installations, metadata.manifest, source='store')
+    except ValueError:
+        result = {'pack_id': metadata.pack_id, 'name': metadata.manifest.name or metadata.pack_id,
+            'version': metadata.version, 'source': 'store', 'restart_required': True, 'dependencies': [],
+            'environments': [], 'warnings': [], 'blockers': ['Store dependency metadata is invalid']}
+    return result
 
 
 def identity(pack_id: PackId, version: Annotated[str, Path(min_length=1, max_length=64)]):
@@ -103,23 +114,31 @@ async def versions(pack_id: PackId, cursor: Cursor = None, limit: Limit = 20, se
 async def version(target=Depends(identity), services=Depends(get_services)):
     with remote_errors():
         metadata = await services.marketplace.get_version(target.pack_id, target.version)
-    from backend.packs.planning import plan
-    try:
-        installation_plan = plan(services.pack_installations, metadata.manifest, source='store')
-    except ValueError:
-        installation_plan = {'pack_id': target.pack_id, 'name': metadata.manifest.name or target.pack_id,
-            'version': target.version, 'source': 'store', 'restart_required': True, 'dependencies': [],
-            'environments': [], 'warnings': [], 'blockers': ['Store dependency metadata is invalid']}
-    installation_plan['warnings'].append('Store metadata is preliminary; the downloaded archive is verified before preparation')
-    return {**metadata.model_dump(), **local_state(services, target.pack_id, target.version), 'plan': installation_plan}
+    preview = installation_plan(services, metadata)
+    preview['warnings'].append('Store metadata is preliminary; the downloaded archive is verified before preparation')
+    state = local_state(services, target.pack_id, target.version)
+    state['can_install'] = state['can_install'] and not preview['blockers']
+    return {**metadata.model_dump(), **state, 'plan': preview}
 
 
 @router.post("/{pack_id}/versions/{version}/install", dependencies=[Depends(mutation_request)])
 async def install(request: Request, target=Depends(identity), services=Depends(get_services)):
     # Always fetch authoritative metadata for the explicit version, not catalog
     # state. Keep network waiting outside the world's mutation transaction.
+    # A trusted acquisition proxy may have already downloaded the archive. Read
+    # its bounded body before the disconnect watcher, then verify it against the
+    # same authoritative version metadata used by ordinary Store acquisition.
+    supplied = (await archive_body(request) if request.headers.get('content-type','').split(';')[0]=='application/vnd.oaw.pack' else None)
     with remote_errors():
         metadata = await while_connected(request, services.marketplace.get_version(target.pack_id, target.version))
+    if supplied is not None:
+        import hashlib
+        if hashlib.sha256(supplied).hexdigest()!=metadata.sha256:
+            raise HTTPException(422,'Acquired archive differs from the authoritative Store version')
+    blockers = installation_plan(services, metadata)['blockers']
+    if blockers:
+        from backend.errors import ResourceValidationError
+        raise ResourceValidationError('; '.join(blockers))
     rows = services.pack_installations.status()["versions"]
     retained = next((r for r in rows if (r["id"], r["version"]) == (target.pack_id, target.version)), None)
     if retained:
@@ -140,7 +159,7 @@ async def install(request: Request, target=Depends(identity), services=Depends(g
                 await finish_thread(services.pack_installations.interrupt_activation, target.pack_id, target.version)
         return local_state(services, target.pack_id, target.version)
     with remote_errors():
-        data = await while_connected(request, services.marketplace.download(metadata))
+        data = supplied if supplied is not None else await while_connected(request, services.marketplace.download(metadata))
     await prepare_and_install(services, data, expected_id=target.pack_id,
                               expected_version=target.version, expected_sha256=metadata.sha256)
     return local_state(services, target.pack_id, target.version)

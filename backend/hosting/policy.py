@@ -11,9 +11,10 @@ from starlette.responses import JSONResponse
 _HOST_FIELDS = frozenset({"workspace_path", "workspace_root", "working_directory", "cwd", "project_path",
                           "host_path", "local_path", "folders", "folder_bindings", "plugin_directories"})
 _BLOCKED_PREFIXES = ("/api/desktop", "/api/settings/storage", "/api/diagnostics", "/api/development",
-                     "/api/store", "/api/runtime/python/plugins", "/api/settings/sandbox", "/api/application/restart")
+                     "/api/runtime/python/plugins", "/api/settings/sandbox", "/api/application/restart")
 _PACK_ASSET = re.compile(r"/api/packs/[^/]+/versions/[^/]+/.+")
 _NODE_ACTION = re.compile(r"/api/(?:runtime-app/workspace/)?nodes/[^/]+/(?:actions|resource)/[^/]+")
+_FILE_ACTION = re.compile(r"/api/(?:runtime-app/workspace/)?nodes/[^/]+/resource/[^/]+/files")
 # Pack actions carry uploads as base64 JSON (up to 32 MiB decoded). Their
 # handlers still enforce file limits, schemas and capability authorization.
 _ACTION_BODY_LIMIT = 48 * 1024 * 1024
@@ -46,8 +47,8 @@ def unsafe_host_configuration(value) -> bool:
 class HostedPolicyMiddleware:
     """Deny host management even when an authenticated user constructs requests."""
 
-    def __init__(self, app, *, managed_models=False):
-        self.app, self.managed_models = app, managed_models
+    def __init__(self, app, *, managed_models=False, pack_config=None):
+        self.app, self.managed_models, self.pack_config = app, managed_models, pack_config
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in {"http", "websocket"}:
@@ -64,19 +65,25 @@ class HostedPolicyMiddleware:
 
         send = secure_send
         path = scope["path"].rstrip("/")
+        scope['oaw.hosted'] = True
         method = scope.get("method", "GET")
+        from .packs import authorized
+        pack_admin = self.pack_config is not None and authorized(scope,self.pack_config)
+        if pack_admin:
+            scope['oaw.pack_management'] = True
         blocked = any(path == prefix or path.startswith(prefix + "/") for prefix in _BLOCKED_PREFIXES)
+        blocked |= ((path == '/api/store' or path.startswith('/api/store/')) and method not in {'GET','HEAD'})
         blocked |= path.startswith("/api/packs") and not (method in {"GET", "HEAD"} and _PACK_ASSET.fullmatch(path))
         blocked |= path.endswith(("/environment-folders", "/files/open-folder"))
         blocked |= bool(re.fullmatch(r"/api/sandboxes/[^/]+/diagnostics", path))
         blocked |= path == "/ws/visual"  # Desktop observation is an operator feature.
         blocked |= (self.managed_models and method not in {"GET", "HEAD", "OPTIONS"}
                     and (path == "/api/settings/llm" or path == "/api/settings/models" or path.startswith("/api/settings/models/")))
-        if blocked:
+        if blocked and not pack_admin:
             return await self._deny(scope, receive, send)
         # Inspect only configuration-bearing routes. Binary attachments and user
         # conversation text stream to their ordinary bounded upload handlers.
-        inspect = (scope["type"] == "http" and method not in {"GET", "HEAD", "OPTIONS"}
+        inspect = (scope["type"] == "http" and method not in {"GET", "HEAD", "OPTIONS"} and not _FILE_ACTION.fullmatch(path)
                    and path.startswith(("/api/nodes", "/api/card-library", "/api/legions", "/api/legion-groups",
                                         "/api/runtime-app/workspace/nodes", "/api/settings/models")))
         if inspect:

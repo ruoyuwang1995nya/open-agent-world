@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
+from uuid import uuid4
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -75,6 +76,14 @@ _current_invocation: ContextVar[InvocationContext | None] = ContextVar(
 DEFAULT_INACTIVITY_TIMEOUT_SECONDS: float = 300.0
 
 
+class _RunDeadlineExceeded(TimeoutError):
+    pass
+
+
+class _ProviderInactive(TimeoutError):
+    pass
+
+
 @dataclass(slots=True)
 class RunManager:
     """Single authority for Run creation, execution, transition, and cancellation."""
@@ -113,6 +122,7 @@ class RunManager:
     execution_settled: Callable[[], None] | None = None
     conversation_event: Callable[[AgentEvent, RunRecord], Awaitable[str | None]] | None = None
     shutting_down: bool = False
+    require_managed_execution: bool = False
 
     def __post_init__(self):
         import math
@@ -239,6 +249,7 @@ class RunManager:
 
         if not isinstance(provider, RuntimeProvider):
             raise TypeError("provider must implement RuntimeProvider")
+        self._check_execution_support(provider)
         if hasattr(provider, "reasoning_store"):
             provider.reasoning_store = self.state
         self._providers[provider_id] = provider
@@ -313,6 +324,10 @@ class RunManager:
                 raise RuntimeUnavailableError("Conversation context is being deleted")
             if caller_kind == "conversation" and self.context_store is not None and self.context_store.session(context_id) is None:
                 raise RuntimeUnavailableError("Conversation session no longer exists")
+            from backend.sandbox.task_workspace import initial_policy
+            run_id = run_id or str(uuid4())
+            workspace_policy = initial_policy(self.store, agent_id=agent_id, run_id=run_id,
+                caller_kind=caller_kind, task_id=task_id, lifecycle=dict(initial_lifecycle or {}), context_id=context_id)
             record = self.store.create(
                 agent_id=agent_id,
                 run_id=run_id,
@@ -325,7 +340,7 @@ class RunManager:
             )
             record = self.store.update_lifecycle(
                 record.run_id,
-                **{
+                **{"task_workspace": workspace_policy,
                     "owner_kind": "agent",
                     "owner_id": agent_id,
                     "cancellation_policy": "independent" if detached or parent_run_id is None else "dependent",
@@ -348,6 +363,8 @@ class RunManager:
                 actor_id=agent_id,
                 run_id=record.run_id,
             )
+            self.state.set(state_context.local_scope, "task_prompt", task_prompt or prompt,
+                           actor_id=agent_id, run_id=record.run_id)
             self._execution_done[record.run_id] = asyncio.Event()
             self._terminal_done[record.run_id] = asyncio.Event()
             self._occupied_runs[record.run_id] = agent_id
@@ -834,7 +851,8 @@ class RunManager:
             state_context=self._state_context(record),
             group_context=team,
             delegation_context=record.lifecycle.get("delegation_context"),
-            extensions={"background_job_notification": record.lifecycle.get("background_job_notification")},
+            extensions={"background_job_notification": record.lifecycle.get("background_job_notification"),
+                        "continuation_run_id": record.lifecycle.get("continuation_run_id")},
         )
         token = _current_invocation.set(context)
         from .reasoning import RunReasoning
@@ -895,7 +913,7 @@ class RunManager:
                         while True:
                             remaining = None if deadline is None else deadline - asyncio.get_running_loop().time()
                             if remaining is not None and remaining <= 0:
-                                raise TimeoutError('execution deadline exceeded')
+                                raise _RunDeadlineExceeded()
                             wait_seconds = timeout
                             if remaining is not None:
                                 wait_seconds = remaining if timeout is None else min(timeout, remaining)
@@ -903,29 +921,33 @@ class RunManager:
                             if done:
                                 event = pending_event.result()
                                 break
+                            # The deadline may be the shorter wait even while
+                            # the provider is producing activity or running a tool.
+                            if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+                                raise _RunDeadlineExceeded()
                             if not active_tools and record.run_id not in self._suspensions:
-                                raise TimeoutError('provider liveness is unknown')
+                                raise _ProviderInactive()
                     except StopAsyncIteration:
                         break
-                    except TimeoutError:
+                    except (_RunDeadlineExceeded, _ProviderInactive) as error:
+                        if isinstance(error, _RunDeadlineExceeded):
+                            message = f'Run exceeded its {execution_seconds:g}-second execution deadline'
+                            reason = 'execution_deadline'
+                        else:
+                            message = f'Provider produced no activity for {timeout:g} seconds; liveness unknown'
+                            reason = 'provider_inactivity'
                         self.store.update_lifecycle(record.run_id, cleanup='pending',
-                            cleanup_reason='Provider liveness unknown or execution deadline exceeded')
+                            cleanup_reason=message, termination_reason=reason)
                         if self.get_run(record.run_id).status not in TERMINAL_RUN_STATUSES:
                             await self.transition_run(record.run_id, RunStatus.FAILED,
-                                error='Provider produced no activity or exceeded execution deadline; liveness unknown')
+                                error=message)
                         stop_task = asyncio.create_task(provider.stop(record.run_id))
                         self._cleanup_tasks[record.run_id] = stop_task
                         done, _ = await asyncio.wait({stop_task}, timeout=self.cleanup_timeout_seconds)
                         if done:
                             stop_task.result()
                             self.store.update_lifecycle(record.run_id, cleanup='complete')
-                        inactivity_detail = f" for {timeout:g} seconds" if timeout is not None else ""
-                        deadline_detail = (f" or exceeded its {execution_seconds:g}-second execution deadline"
-                                           if execution_seconds is not None else "")
-                        raise RuntimeError(
-                            f"runtime provider produced no activity{inactivity_detail}{deadline_detail}; "
-                            "liveness could not be established"
-                        ) from None
+                        raise RuntimeError(message) from None
                     if event.agent_id != record.agent_id or event.run_id != record.run_id:
                         raise RuntimeError(
                             "runtime provider emitted an event for a different Agent or Run"
@@ -1113,6 +1135,7 @@ class RunManager:
         self.plugins.assert_runtime_provider_enabled(provider_id)
         existing = self._providers.get(provider_id)
         if existing is not None:
+            self._check_execution_support(existing)
             return existing
         options = dict(self.provider_options.get(provider_id, {}))
         provider = self.plugins.create_runtime_provider(
@@ -1121,10 +1144,15 @@ class RunManager:
             managed_context_store=self.context_store,
             **options,
         )
+        self._check_execution_support(provider)
         if hasattr(provider, "reasoning_store"):
             provider.reasoning_store = self.state
         self._providers[provider_id] = provider
         return provider
+
+    def _check_execution_support(self,provider):
+        if self.require_managed_execution and provider.supports_managed_execution is not True:
+            raise RuntimeUnavailableError('This runtime has not adopted managed execution for hosted profiles. Install an updated connector using the host-selected execution SDK.')
 
     def _task_finished(self, run_id: str) -> None:
         self._runtime_tasks.pop(run_id, None)

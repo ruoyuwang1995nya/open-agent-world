@@ -16,7 +16,7 @@ type Props = {
 
 export function ConversationComposer({ composer, activeSession, selectedAgentName, busy, onInteract }: Props) {
   const {
-    draft, setDraft, attachments, setAttachments, fileInput, messageInput,
+    draft, setDraft, attachments, setAttachments, attachmentError, fileInput, messageInput, continuationRunId, setContinuationRunId,
     selectedAgentId, completion, mentionIndex, setMentionIndex, setMentionCaret,
     chooseMention, submit, transfers, intake, uploading,
   } = composer;
@@ -50,14 +50,20 @@ export function ConversationComposer({ composer, activeSession, selectedAgentNam
   return (
     <div className="workspace-composer" {...intake.pasteProps} onPointerDown={onInteract}>
       <TransferList queue={transfers.queue} items={transfers.items} />
+      {attachmentError && <p className="conversation-execution-error" role="alert">{attachmentError}</p>}
       <input ref={fileInput} type="file" multiple hidden aria-label={t("Attach files")} onChange={(event) => {
         const files = Array.from(event.target.files ?? []);
         event.target.value = "";
         void intake.pick(files, activeSession?.id);
       }} />
       {attachments.length > 0 && <div className="conversation-pending-files">{attachments.map((file) => <span key={file.version_id}><span>{file.name}</span><IconButton icon={X} size="xs" quiet label={t("Remove attachment {v0}", { v0: String(file.name) })} onClick={() => setAttachments((current) => current.filter((item) => item.version_id !== file.version_id))} /></span>)}</div>}
+      {continuationRunId && <div className="conversation-pending-files"><span>
+        <span>{t('Continuing the original task')}</span>
+        <IconButton icon={X} size="xs" quiet label={t('Clear continuation')} onClick={() => setContinuationRunId(undefined)} />
+      </span></div>}
       <textarea ref={messageInput} value={draft} onChange={(event) => {
         setDraft(event.target.value);
+        if (!event.target.value.trim()) setContinuationRunId(undefined);
         setMentionCaret(event.target.selectionStart ?? event.target.value.length);
       }} onClick={(event) => setMentionCaret(event.currentTarget.selectionStart ?? undefined)} onSelect={(event) => setMentionCaret(event.currentTarget.selectionStart ?? undefined)} onKeyDown={handleKeyDown} placeholder={activeSession ? t("Write a message; use @name to address a participant…") : t("Create or select a session first…")} aria-label={t("Conversation message")} aria-autocomplete="list" aria-expanded={Boolean(completion)} aria-controls={completion ? "conversation-mention-menu" : undefined} disabled={!activeSession} />
       {completion ? (

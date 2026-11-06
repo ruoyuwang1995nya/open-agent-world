@@ -37,16 +37,27 @@ it('keeps the IDE in collapsed developer tools and returns to the Library after 
 const installedContentPack = { id: 'local.research', name: 'Research kit', version: '1.0.0', selected: true, loaded: false,
   kind: 'content' as const, environment: null };
 
-it('keeps hosted collections available without exposing plugin installation or store controls', async () => {
+it('lets hosted users browse Store while keeping installation controls unavailable', async () => {
   vi.spyOn(hostedAuth, 'isHosted').mockReturnValue(true);
-  useCardLibrary.setState({ snapshot: snapshot(), open: true, tab: 'store', refresh: async () => {} });
+  useCardLibrary.setState({ snapshot: snapshot(), open: true, tab: 'packs', refresh: async () => {} });
   useWorldStore.setState({ legions: [] });
   await act(async () => { render(<CardLibrary />); });
-  expect(screen.queryByRole('button', { name: 'Store' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Store' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Install Pack from File...' })).toBeNull();
   expect(screen.queryByLabelText('Pack file')).toBeNull();
   expect(worldApi.getInstalledPacks).not.toHaveBeenCalled();
   expect(screen.getByRole('heading', { name: 'Pack inventory' })).toBeTruthy();
+});
+
+it('enables the existing installer for an operator-enabled hosted administrator', async () => {
+  vi.spyOn(hostedAuth,'isHosted').mockReturnValue(true);
+  vi.spyOn(hostedAuth,'canManageHostedPacks').mockReturnValue(true);
+  useCardLibrary.setState({snapshot:snapshot(),open:true,tab:'packs',refresh:async()=>{}});
+  useWorldStore.setState({legions:[]});
+  await act(async()=>{render(<CardLibrary/>);});
+  expect(screen.getByRole('button',{name:'Install Pack from File...'})).toBeTruthy();
+  expect(worldApi.getInstalledPacks).toHaveBeenCalled();
+  expect(screen.queryByText('Developer tools')).toBeNull();
 });
 
 it('adds an installed file to the inventory immediately and closes its installation panel', async () => {
@@ -173,18 +184,22 @@ it('shows a local installation plan and prevents installing with unresolved bloc
   expect(install).not.toHaveBeenCalled();
 });
 
-it('shows uninstall resource ownership and blocks removal until dependencies permit it', async () => {
+it.each([
+  ['Another Pack requires this renderer', 'Another Pack requires this renderer'],
+  ['In use by card Harness', 'Remove the card "Harness" before uninstalling this Pack.'],
+])('explains an uninstall blocker next to confirmation: %s', async (blocker, explanation) => {
   const state = packSnapshot();
   const id = state.packs.alpha.definition.plugin_id;
   vi.mocked(worldApi.getInstalledPacks).mockResolvedValue({ restart_required: false, versions: [{ ...installedContentPack, id, loaded: true }] });
-  vi.mocked(worldApi.getPackUninstallPlan).mockResolvedValue({ id, owner: id, can_uninstall: false, blockers: ['Another Pack requires this renderer'],
+  vi.mocked(worldApi.getPackUninstallPlan).mockResolvedValue({ id, owner: id, can_uninstall: false, blockers: [blocker],
     source: 'installed', restart_required: true, resources: [{ id: 'shared-science', kind: 'python', action: 'retain', reason: 'Used by XRD' }] });
   const remove = vi.spyOn(worldApi, 'managePack');
   useCardLibrary.setState({ snapshot: state, open: true, tab: 'packs', refresh: async () => {} });
   await act(async () => { render(<CardLibrary />); });
   fireEvent.click(screen.getByRole('button', { name: 'View pack Alpha pack' }));
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Uninstall Pack' })));
-  expect(screen.getByRole('alert').textContent).toContain('Another Pack requires this renderer');
+  expect(screen.getByRole('alert').textContent).toContain(explanation);
+  expect(screen.getByRole('button', { name: 'Confirm uninstall' }).getAttribute('aria-describedby')).toBe('pack-uninstall-blockers');
   expect(screen.getByText('Used by XRD')).toBeTruthy();
   expect((screen.getByRole('button', { name: 'Confirm uninstall' }) as HTMLButtonElement).disabled).toBe(true);
   expect(remove).not.toHaveBeenCalled();
@@ -318,6 +333,28 @@ it('retries a selected archive environment when the same owner also has source i
   fireEvent.click(screen.getByRole('button', { name: 'View pack Alpha pack' }));
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Retry environment preparation' })));
   expect(retry).toHaveBeenCalledWith('environment/retry', 'POST', undefined);
+});
+
+it.each(['failed', 'missing'] as const)('targets the declared executable runtime when it is %s', async environmentState => {
+  const state = packSnapshot();
+  const owner = state.packs.alpha.definition.plugin_id;
+  const version = { ...installedContentPack, id: 'distribution.alpha', owner, kind: 'plugin' as const,
+    environment: { state: 'environment_ready', error: null } };
+  const runtime = { id: version.id, owner, name: 'Alpha pack', version: version.version,
+    source: 'installed' as const, enabled: true, loaded: true, backend_requirements: [], frontend_dependencies: [], warnings: [],
+    environments: [{ id: 'native', target: 'host-worker' as const, provider: 'executable' as const, management: 'managed' as const,
+      state: environmentState, python: [], node: [], error: environmentState === 'failed' ? 'Executable preparation was interrupted' : null }] };
+  const installed = { restart_required: false, versions: [version], inventory: [runtime] };
+  vi.mocked(worldApi.getInstalledPacks).mockResolvedValue(installed);
+  const retry = vi.spyOn(worldApi, 'managePack').mockResolvedValue({ ...installed, inventory: [{ ...runtime,
+    environments: [{ ...runtime.environments[0], state: 'ready', error: null }] }] });
+  useCardLibrary.setState({ snapshot: state, open: true, tab: 'packs', refresh: async () => {} });
+  await act(async () => { render(<CardLibrary />); });
+  fireEvent.click(screen.getByRole('button', { name: 'View pack Alpha pack' }));
+  const action = screen.getByRole('button', { name: environmentState === 'failed' ? 'Retry native runtime' : 'Prepare native runtime' });
+  if (environmentState === 'failed') expect(within(action.parentElement!).getByRole('alert').textContent).toBe('native: Executable preparation was interrupted');
+  await act(async () => fireEvent.click(action));
+  expect(retry).toHaveBeenCalledWith('environment/retry', 'POST', { pack_id: version.id, environment_id: 'native' });
 });
 
 afterEach(() => {

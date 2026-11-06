@@ -50,6 +50,7 @@ const historicalMessage: ConversationMessage = {
 describe("ConversationWorkspace snapshots", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.spyOn(worldApi, 'fileTransferPolicy').mockResolvedValue({ max_file_bytes: 512 * 1024 * 1024, chunk_bytes: 256 * 1024 });
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
       configurable: true,
       value: vi.fn(),
@@ -66,6 +67,39 @@ describe("ConversationWorkspace snapshots", () => {
   });
 
   afterEach(() => cleanup());
+
+  it('keeps explicit continuation identity out of editable recovery prose and clears it after send', async () => {
+    const agent = { id: 'atlas', name: 'Atlas', status: 'idle', model: 'fixture', connected: true };
+    vi.mocked(worldApi.getConversation).mockResolvedValue({ conversation_id: card.id,
+      sessions: [{ ...session, participant_ids: [agent.id] }], agents: [agent] });
+    vi.mocked(worldApi.getConversationTimeline).mockResolvedValue({ items: [{ ...historicalMessage,
+      id: 'failed-message', sender_kind: 'system', content: 'Interrupted', run_id: 'failed-run' }],
+      has_before: false, has_after: false, run_summaries: { 'failed-run': {
+        run_id: 'failed-run', agent_id: agent.id, status: 'failed', tool_count: 1, tool_trace: [], recovery_kind: 'model_stream_interrupted',
+        recovery_classification: 'read_only', confirmed_tool_count: 1,
+        recovery_receipts: [{ capability_kind: 'skills.read', target_id: 'skill', state: 'finished', read_only: true }],
+      } } });
+    const post = vi.spyOn(worldApi, 'postConversationMessage').mockResolvedValue({
+      message: { ...historicalMessage, id: 'continued' }, accepted_agent_ids: [agent.id],
+    });
+    render(<ConversationWorkspace card={card} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Review safe continuation' }));
+    const composer = screen.getByLabelText('Conversation message') as HTMLTextAreaElement;
+    expect(composer.value).toContain('"target_id": "skill"');
+    expect(composer.value).toContain('"capability_kind": "skills.read"');
+    expect(composer.value).not.toContain('failed-run');
+    expect(screen.getByText('Continuing the original task')).toBeTruthy();
+    fireEvent.change(composer, { target: { value: 'Continue, keeping the requested dimensions.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith(card.id, session.id, expect.objectContaining({
+      continuation_run_id: 'failed-run', mention_agent_ids: ['atlas'], content: 'Continue, keeping the requested dimensions.',
+    })));
+    expect(screen.queryByText('Continuing the original task')).toBeNull();
+    fireEvent.change(composer, { target: { value: 'A new independent task' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+    expect(post.mock.calls[1][2].continuation_run_id).toBeUndefined();
+  });
 
   it('renders system notices as a distinct label above the body without an agent avatar', async () => {
     vi.mocked(worldApi.getConversationTimeline).mockResolvedValue({ items: [{ ...historicalMessage,
@@ -496,6 +530,39 @@ describe("ConversationWorkspace snapshots", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it('accepts a spreadsheet larger than the former 64 MiB limit', async () => {
+    const file = new File(['workbook'], 'large.xlsx');
+    Object.defineProperty(file, 'size', { value: 135382831 });
+    const upload = vi.spyOn(worldApi, 'uploadConversationAttachment').mockResolvedValue({
+      version_id: 'large', path: file.name, name: file.name, size_bytes: file.size, media_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    render(<ConversationWorkspace card={card} />);
+    await screen.findByText(historicalMessage.content);
+    fireEvent.change(screen.getByLabelText('Attach files', { selector: 'input' }), { target: { files: [file] } });
+    expect(await screen.findByRole('button', { name: 'Remove attachment large.xlsx' })).toBeTruthy();
+    expect(upload).toHaveBeenCalledWith(card.id, session.id, file, expect.any(Object));
+  });
+
+  it('shows oversized-file errors inside the composer and clears them after a valid upload', async () => {
+    const file = new File(['workbook'], 'oversized.xlsx');
+    Object.defineProperty(file, 'size', { value: 512 * 1024 * 1024 + 1 });
+    const upload = vi.spyOn(worldApi, 'uploadConversationAttachment').mockResolvedValue({
+      version_id: 'ok', path: 'ok.txt', name: 'ok.txt', size_bytes: 2, media_type: 'text/plain',
+    });
+    render(<ConversationWorkspace card={card} />);
+    await screen.findByText(historicalMessage.content);
+    const input = screen.getByLabelText('Attach files', { selector: 'input' });
+    fireEvent.change(input, { target: { files: [file] } });
+    const error = await screen.findByRole('alert');
+    expect(error.closest('.workspace-composer')).toBeTruthy();
+    expect(error.textContent).toContain('512 MiB');
+    expect(error.textContent).toContain('oversized.xlsx');
+    expect(upload).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { files: [new File(['ok'], 'ok.txt')] } });
+    await screen.findByRole('button', { name: 'Remove attachment ok.txt' });
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('continues a batch after a failed attachment and prevents simultaneous duplicate intake', async () => {
     let finish!: () => void;
     const upload = vi.spyOn(worldApi, 'uploadConversationAttachment')
@@ -569,6 +636,28 @@ describe("ConversationWorkspace snapshots", () => {
     act(() => { disclosure.open = true; fireEvent(disclosure, new Event('toggle')); });
     expect(await screen.findByText("read_file")).toBeTruthy();
     expect(disclosure.compareDocumentPosition(finalArticle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('restores an Agent-delivered file outside the collapsed work log', async () => {
+    const delivered: ConversationMessage = { ...historicalMessage, id: 'delivered', sequence: 2,
+      sender_kind: 'agent', sender_name: 'Atlas', run_id: 'run-files', content: '',
+      attachments: [{ version_id: 'report-v1', path: 'report.csv', name: 'report.csv', size_bytes: 42, media_type: 'text/csv' }] };
+    const narration: ConversationMessage = { ...delivered, id: 'checking', sequence: 3, attachments: [], content: 'Checking the report' };
+    const final: ConversationMessage = { ...narration, id: 'final-files', sequence: 4, content: 'Report is ready', is_final: true };
+    vi.mocked(worldApi.getConversationTimeline).mockResolvedValue({
+      items: [historicalMessage, delivered, narration, final], has_before: false, has_after: false,
+      run_summaries: { 'run-files': { run_id: 'run-files', agent_id: 'atlas', status: 'succeeded',
+        final_message_id: final.id, tool_count: 1, tool_trace: [] } },
+    });
+    const archive = vi.spyOn(worldApi, 'getRunActivity');
+    render(<ConversationWorkspace card={card} />);
+    await screen.findByText(final.content);
+    const download = screen.getByRole('link', { name: 'Download report.csv' });
+    expect(download.closest('details')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open report.csv' })).toBeTruthy();
+    expect(screen.getByText('Work log').closest('details')?.open).toBe(false);
+    expect(screen.queryByText(narration.content)).toBeNull();
+    expect(archive).not.toHaveBeenCalled();
   });
 
   it('shows a failed Run notice once after its replies without blaming model settings', async () => {

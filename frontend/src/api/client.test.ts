@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useWorldStore } from "../state/worldStore";
+import { useConversationView } from "../state/conversationView";
+import { TEST_CATALOG } from "../state/catalog.fixture";
 import {
   normalizeCard,
   normalizeEdge,
@@ -14,6 +17,21 @@ afterEach(() => {
 });
 
 describe("API normalization boundary", () => {
+  it('uploads resource files as multipart and follows the host file policy', async () => {
+    const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/files/policy')
+      ? { max_file_bytes: 10, chunk_bytes: 4 } : { saved: true }), { headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const file = new File(['data'], 'input.xlsx');
+    await worldApi.nodeResourceFileAction('knowledge', 'ingest', { group_id: 'group' }, { file });
+    const [, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect(init.body).toBeInstanceOf(FormData);
+    expect((init.headers as Headers).get('Content-Type')).toBeNull();
+    const body = init.body as FormData;
+    expect(JSON.parse(String(body.get('request')))).toEqual({ arguments: { group_id: 'group' }, confirm: false });
+    expect(body.get('file')).toBeInstanceOf(File);
+    await expect(worldApi.nodeResourceFileAction('knowledge', 'ingest', {}, { file: new File(['oversized data'], 'large.xlsx') })).rejects.toThrow('Upload exceeds');
+    expect(fetchMock).toHaveBeenCalledTimes(3); // second attempt read policy, never sent its file
+  });
   it('sends sandbox deletion and move paths through explicit mutation endpoints', async () => {
     const fetchMock = vi.fn().mockImplementation(async () => new Response('{}', { headers: { 'content-type': 'application/json' } }));
     vi.stubGlobal('fetch', fetchMock);
@@ -30,12 +48,40 @@ describe("API normalization boundary", () => {
     const file = new File(['abc'], 'data.txt');
     await worldApi.uploadSandboxEntry('sandbox one', 'folder/data.txt', file);
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe('/api/sandboxes/sandbox%20one/files?path=folder%2Fdata.txt&directory=false');
+    expect(url).toBe('/api/sandboxes/sandbox%20one/files?path=folder%2Fdata.txt&directory=false&state_session=default');
     expect(init.body).toBe(file);
     expect(init.headers.get('Content-Type')).toBe('application/octet-stream');
     await worldApi.uploadSandboxEntry('sandbox one', 'folder/empty');
     expect(fetchMock.mock.calls[1][0]).toContain('directory=true');
     expect(fetchMock.mock.calls[1][1].body).toBe('');
+  });
+  it('carries the selected native session on file mutations and direct Agent execution', async () => {
+    const world = useWorldStore.getState();
+    const view = useConversationView.getState();
+    const fetchMock = vi.fn().mockImplementation(async () => new Response('{}', { headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    useWorldStore.setState({ cards: ['box', 'agent', 'room'].map(id => normalizeCard({ id, type: id === 'room' ? 'conversation' : id === 'box' ? 'sandbox' : 'agent' })),
+      catalog: TEST_CATALOG, edges: [
+        normalizeEdge({ id: 'execute', source: 'agent', target: 'box', relationship: 'execute' }),
+        normalizeEdge({ id: 'join', source: 'agent', target: 'room', relationship: 'participate' }),
+      ] });
+    useConversationView.setState({ activeConversationId: 'room', sessions: { room: 'selected-session' } });
+    try {
+      await worldApi.deleteSandboxFile('box', 'Session/file.txt');
+      await worldApi.moveSandboxFile('box', 'Session/file.txt', 'Session/moved.txt');
+      await worldApi.runAgent('agent', 'Continue');
+      for (const [, init] of fetchMock.mock.calls) {
+        expect(init.headers.get('X-OAW-State-Session')).toBe('selected-session');
+      }
+      await worldApi.uploadSandboxEntry('box', 'Session/input.txt', new File(['data'], 'input.txt'));
+      expect(fetchMock.mock.calls[3][0]).toContain('state_session=selected-session');
+      useWorldStore.setState({ edges: [] });
+      await worldApi.deleteSandboxFile('box', 'Default session/file.txt');
+      expect(fetchMock.mock.calls[4][1].headers.get('X-OAW-State-Session')).toBe('default');
+    } finally {
+      useWorldStore.setState({ cards: world.cards, catalog: world.catalog, edges: world.edges });
+      useConversationView.setState({ activeConversationId: view.activeConversationId, sessions: view.sessions });
+    }
   });
   it("sends global environment variables when saving Sandbox settings", async () => {
     const settings = { workspace_root: null, runtime: "auto", environment_variables: { OAW_MINERU_TOKEN: "test-global-token" } };

@@ -159,6 +159,7 @@ class SandboxExecuteRequest(BaseModel):
     environment_id: str | None = None
     target_id: str | None = None
     python_environment: Literal["auto", "managed", "none"] = "auto"
+    working_directory: str = Field(default="", max_length=4096)
 
     @model_validator(mode="after")
     def validate_command_shape(self) -> "SandboxExecuteRequest":
@@ -198,13 +199,7 @@ async def run_agent(
 ) -> dict[str, object]:
     # The prefix keeps it from ever naming a real conversation session.
     context_id = f"isolated:{uuid4()}" if request.fresh_context else None
-    if (
-        request.task_id is None
-        and request.parent_run_id is None
-        and not request.detached
-    ):
-        return await services.run_agent(agent_id, request.prompt, context_id=context_id)
-    run = await services._require_run_manager().start_run(
+    return await services.run_agent(
         agent_id,
         request.prompt,
         task_id=request.task_id,
@@ -212,7 +207,6 @@ async def run_agent(
         detached=request.detached,
         context_id=context_id,
     )
-    return {"accepted": True, "agent_id": agent_id, "run_id": run.run_id}
 
 
 @router.get("/runs", response_model=list[RunRecord])
@@ -411,7 +405,7 @@ async def execute_sandbox(
         command=request.command,
         timeout_seconds=request.timeout_seconds, environment_id=request.environment_id, target_id=request.target_id,
         python_environment=request.python_environment,
-        _keep_on_disconnect=True,
+        _keep_on_disconnect=True, _working_directory=request.working_directory,
     )
 
 
@@ -421,6 +415,14 @@ async def sandbox_configuration(sandbox_id: str, services=Depends(get_services))
     async with services._node_mutation(read_only=True):
         services._require_card_type(sandbox_id, "sandbox")
         return configuration_summary(services, sandbox_id)
+
+
+@router.get("/sandboxes/{sandbox_id}/workspaces")
+@router.get("/sandboxes/{sandbox_id}/task-workspaces", include_in_schema=False)
+async def sandbox_task_workspaces(sandbox_id: str, services=Depends(get_services)):
+    from backend.sandbox.task_workspace import list_workspaces
+    services._require_card_type(sandbox_id, "sandbox")
+    return {"items": list_workspaces(services, sandbox_id)}
 
 
 @router.get("/sandboxes/{sandbox_id}/history")
@@ -438,7 +440,6 @@ async def sandbox_cancel(sandbox_id: str, command_id: str | None = None, service
 
 @router.get("/sandboxes/{sandbox_id}/files")
 async def sandbox_files(sandbox_id: str, operation: str = "roots", root: str = "workspace", path: str = "", services=Depends(get_services), cursor: str = '', query: str = ''):
-    import base64
     if operation not in {"roots", "list", "preview", "download"}:
         raise SandboxValidationError("Unsupported read operation")
     async with services._node_mutation(read_only=True):
@@ -448,25 +449,39 @@ async def sandbox_files(sandbox_id: str, operation: str = "roots", root: str = "
             result = await backend.file_operation(sandbox_id, 'download_info' if operation == 'download' else operation,
                 root=root, path=path, **({'cursor': cursor, 'query': query} if operation == 'list' else {}))
         except FileNotFoundError:
+            if operation == 'list' and root == 'workspace':
+                from backend.workspace_context import resolve_workspace
+                current = resolve_workspace(services, sandbox_id, sandbox_id=sandbox_id, allow_unbound=True)
+                if current['directory'] and path == current['directory']:
+                    return {'entries': [], 'truncated': False, 'exists': False}
             return {"state": "missing", "message": "File or directory no longer exists"}
         except FileExistsError:
             return {"state": "conflict", "message": "Destination exists"}
         except (PermissionError, OSError):
             return {"state": "permission_denied", "message": "Access denied or path is not a regular file/directory"}
     if operation == 'download':
+        from contextlib import aclosing
         from fastapi.responses import StreamingResponse
         from urllib.parse import quote
+        from backend.file_transfer import MAX_FILE_BYTES
+        from backend.sandbox.file_streams import SandboxFileTransfer
+        if result['size'] > MAX_FILE_BYTES:
+            raise HTTPException(413, 'File exceeds the 512 MiB transfer limit')
+        transfer = SandboxFileTransfer(services, sandbox_id,
+            lambda: services._require_card_type(sandbox_id, 'sandbox'))
+        stream = transfer.read_file_stream(path, root=root, max_bytes=MAX_FILE_BYTES)
+        try:
+            first = await anext(stream, b'')
+            if transfer.read_info['signature'] != result['signature']:
+                raise SandboxValidationError('File changed before download')
+        except BaseException:
+            await stream.aclose()
+            raise
         async def body():
-            offset = 0
-            while offset < result['size']:
-                async with services._node_mutation(read_only=True):
-                    services._require_card_type(sandbox_id, 'sandbox')
-                    chunk = await backend.file_operation(sandbox_id, 'download_chunk', root=root, path=path,
-                        expected=result['signature'], offset=offset)
-                if not chunk['size']:
-                    raise SandboxValidationError('File changed during download')
-                offset += chunk['size']
-                yield base64.b64decode(chunk['data'])
+            async with aclosing(stream):
+                yield first
+                async for chunk in stream:
+                    yield chunk
         return StreamingResponse(body(), media_type='application/octet-stream', headers={
             'Content-Length': str(result['size']), 'Content-Disposition': f"attachment; filename*=UTF-8''{quote(result['name'], safe='')}",
             'X-Content-Type-Options': 'nosniff'})
@@ -504,75 +519,47 @@ async def open_sandbox_folder(sandbox_id: str, body: OpenSandboxFolderRequest, r
 async def upload_sandbox_file(sandbox_id: str, path: str, request: Request,
                               directory: bool = False, services=Depends(get_services)):
     """Stream into a staged file with a binding lease and bounded runtime chunks."""
-    import base64
-    import asyncio
-    import logging
     from backend.sandbox.files import parts
     from backend.sandbox.streaming import UPLOAD_LIMIT
-    from backend.sandbox.transfers import CHUNK_BYTES
+    from backend.sandbox.file_streams import SandboxFileTransfer
     if not parts(path):
         raise SandboxValidationError("Choose a file or folder within the workspace")
     services._require_card_type(sandbox_id, "sandbox")
+    from backend.workspace_context import assert_workspace_write
+    from backend.card_state import active_state_session
+    if services.run_manager.current_context is not None or active_state_session.get() is not None:
+        from backend.sandbox.task_workspace import binding, ensure_directory
+        async with services._node_mutation():
+            previous = binding(services, sandbox_id)['directory']
+            assigned = (await ensure_directory(services, sandbox_id))['directory']
+            if previous and assigned != previous and (path == previous or path.startswith(previous + '/')):
+                path = assigned + path[len(previous):]
+    assert_workspace_write(services, sandbox_id, path)
     if directory:
         async for chunk in request.stream():
             if chunk:
                 raise HTTPException(413, detail='Folders must have an empty body')
         async with services._node_mutation():
             services._require_card_type(sandbox_id, 'sandbox')
-            return await services._require_sandbox_backend().file_operation(sandbox_id, 'mkdir', path=path)
+            result = await services._require_sandbox_backend().file_operation(sandbox_id, 'mkdir', path=path)
+            return {**result, 'path': path}
     async with services.resources.artifacts.workspace(services, sandbox_id, None, allow_running=True):
-        backend = services._require_sandbox_backend()
-        async def step(operation, **options):
-            # Runtime workers finish under their pins even on cancellation. Obtain
-            # the receipt first so cleanup always knows the created file identity.
-            task = asyncio.create_task(backend.file_operation(sandbox_id, operation, path=path, **options))
-            cancelled = False
-            while not task.done():
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    cancelled = True
-            return task.result(), cancelled
-        staged, cancelled = await step('upload_begin')
-        expected, offset = staged['signature'], 0
-        committed = False
-        try:
-            if cancelled:
-                raise asyncio.CancelledError
+        def authorize():
+            services._require_card_type(sandbox_id, 'sandbox')
+            assert_workspace_write(services, sandbox_id, path)
+        transfer = SandboxFileTransfer(services, sandbox_id, authorize)
+        async def chunks():
+            size = 0
             async for incoming in request.stream():
-                if offset + len(incoming) > UPLOAD_LIMIT:
-                    raise HTTPException(413, detail='File exceeds the 1 GiB upload limit')
-                for start in range(0, len(incoming), CHUNK_BYTES):
-                    chunk = incoming[start:start + CHUNK_BYTES]
-                    result, cancelled = await step('upload_chunk',
-                        staging=staged['staging'], expected=expected, offset=offset, data=base64.b64encode(chunk).decode())
-                    expected = result['signature']
-                    offset += len(chunk)
-                    if cancelled:
-                        raise asyncio.CancelledError
+                size += len(incoming)
+                if size > UPLOAD_LIMIT:
+                    raise HTTPException(413, detail='File exceeds the 512 MiB upload limit')
+                yield incoming
             if await request.is_disconnected():
                 from starlette.requests import ClientDisconnect
                 raise ClientDisconnect()
-            result, _ = await step('upload_commit',
-                staging=staged['staging'], expected=expected, offset=offset)
-            committed = True
-            return result
-        finally:
-            if not committed:
-                cleanup = asyncio.create_task(backend.file_operation(sandbox_id, 'upload_abort', path=path,
-                    staging=staged['staging'], expected=expected))
-                # Keep the lease until cancellation cleanup finishes, too.
-                while not cleanup.done():
-                    try:
-                        await asyncio.shield(cleanup)
-                    except asyncio.CancelledError:
-                        continue
-                    except Exception:
-                        break
-                try:
-                    cleanup.result()
-                except Exception:
-                    logging.getLogger(__name__).warning('Sandbox upload cleanup failed', exc_info=True)
+        await transfer.write_file_stream(path, chunks())
+        return transfer.result
 
 
 class SandboxFileMove(BaseModel):
@@ -586,6 +573,12 @@ async def delete_sandbox_file(sandbox_id: str, path: str, services=Depends(get_s
     async with services._node_mutation():
         services._require_card_type(sandbox_id, 'sandbox')
         services.resources.artifacts.assert_source_idle(sandbox_id)
+        from backend.workspace_context import assert_workspace_write
+        from backend.card_state import active_state_session
+        if active_state_session.get() is not None:
+            from backend.sandbox.task_workspace import ensure_directory
+            await ensure_directory(services, sandbox_id)
+        assert_workspace_write(services, sandbox_id, path)
         return await services._require_sandbox_backend().file_operation(sandbox_id, 'delete', path=path)
 
 
@@ -594,6 +587,12 @@ async def move_sandbox_file(sandbox_id: str, request: SandboxFileMove, services=
     async with services._node_mutation():
         services._require_card_type(sandbox_id, 'sandbox')
         services.resources.artifacts.assert_source_idle(sandbox_id)
+        from backend.workspace_context import assert_workspace_write
+        from backend.card_state import active_state_session
+        if active_state_session.get() is not None:
+            from backend.sandbox.task_workspace import ensure_directory
+            await ensure_directory(services, sandbox_id)
+        assert_workspace_write(services, sandbox_id, request.path, request.destination)
         return await services._require_sandbox_backend().file_operation(sandbox_id, 'move', path=request.path, destination=request.destination)
 
 

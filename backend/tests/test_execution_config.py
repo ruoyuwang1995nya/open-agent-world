@@ -63,11 +63,44 @@ def test_global_environment_is_live_for_existing_and_new_sandboxes(runtime_clien
 @pytest.mark.parametrize('variables', [
     {'PATH': '/unsafe'}, {'OAW_TARGET_CONFIG_JSON': '{}'}, {'A': '1', 'a': '2'},
     {'BAD-NAME': 'x'}, {'VALUE': 'nul\0'}, {'VALUE': 12}, {'VALUE': 'x' * 24000},
+    {'UV_PYTHON': '/unsafe'}, {'PIP_TARGET': '/unsafe'},
 ])
 def test_global_environment_validation(client, variables):
     response = client.put('/api/settings/sandbox', json={'environment_variables': variables})
     assert response.status_code == 422, response.text
     assert client.get('/api/settings/sandbox').json()['environment_variables'] == {}
+
+
+@pytest.mark.parametrize('scope', ['global', 'profile', 'sandbox'])
+def test_installer_options_save_and_reach_commands_through_existing_environment_scopes(runtime_client, scope):
+    client, _, native = runtime_client
+    agent, sandbox, *_ = setup_skill(client)
+    variables = {
+        'UV_DEFAULT_INDEX': 'https://pypi.tuna.tsinghua.edu.cn/simple',
+        'UV_INDEX_URL': 'https://pypi.tuna.tsinghua.edu.cn/simple',
+        'PIP_INDEX_URL': 'https://pypi.tuna.tsinghua.edu.cn/simple',
+        'UV_HTTP_TIMEOUT': '120', 'UV_REQUEST_TIMEOUT': '120',
+        'PIP_TIMEOUT': '120', 'PIP_DEFAULT_TIMEOUT': '120',
+        'UV_HTTP_CONNECT_TIMEOUT': '30', 'UV_HTTP_RETRIES': '5', 'PIP_RETRIES': '5',
+        'UV_CONCURRENT_DOWNLOADS': '4', 'UV_CONCURRENT_INSTALLS': '4', 'UV_OFFLINE': 'false',
+    }
+    if scope == 'global':
+        saved = client.put('/api/settings/sandbox', json={'environment_variables': variables})
+        assert saved.status_code == 200, saved.text
+        assert client.get('/api/settings/sandbox').json()['environment_variables'] == variables
+    else:
+        owner = create_node(client, 'environment') if scope == 'profile' else sandbox
+        path = f"/api/nodes/{owner['id']}"
+        revision = client.get(path + '/document').json()['revision']
+        saved = client.put(path + '/environment', json={'value': {'variables': variables},
+            'secrets': {}, 'expected_revision': revision})
+        assert saved.status_code == 200, saved.text
+        assert client.get(path + '/document').json()['value']['variables'] == variables
+        if scope == 'profile':
+            connect(client, owner, sandbox, 'environment.default')
+    provider, definitions = tools(client, agent)
+    invoke(client, provider, agent, definitions['execute_command'], sandbox=sandbox['id'], argv=['cmd.exe'])
+    assert {name: native.last_environment[name] for name in variables} == variables
 
 
 @pytest.mark.parametrize("node_type", ["environment", "compute-target"])
@@ -243,7 +276,8 @@ def test_all_scopes_rechecked_after_handler_exposure_before_secret_resolution(ru
 
 
 @pytest.mark.parametrize("key", ["OAW_TARGET_CONFIG_JSON", "oaw_target_config_json", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES",
-    "PATH", "home", "COMSPEC", "SystemRoot", "BASH_ENV", "ENV", "PYTHONPATH", "NODE_OPTIONS", "WSLENV", "SANDBOX_RESOURCES"])
+    "PATH", "home", "COMSPEC", "SystemRoot", "BASH_ENV", "ENV", "PYTHONPATH", "NODE_OPTIONS", "WSLENV", "SANDBOX_RESOURCES",
+    "uv_python", "UV_SYSTEM_PYTHON", "PIP_TARGET", "UV_CONFIG_FILE", "UV_INSECURE_HOST", "PIP_TRUSTED_HOST", "UV_UNKNOWN_OPTION"])
 def test_reserved_profile_variables_rejected_before_storage(client, key):
     env = create_node(client, "environment")
     response = client.post(f"/api/nodes/{env['id']}/actions/replace", json={"arguments": {"variables": {key: "unsafe"}}, "expected_revision": 0})

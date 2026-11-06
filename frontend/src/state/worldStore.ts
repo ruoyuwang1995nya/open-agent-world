@@ -410,7 +410,7 @@ interface WorldState {
   saveSandboxConfig: (id: string, config: SandboxConfig) => Promise<boolean>;
   startSandbox: (id: string) => Promise<boolean>;
   stopSandbox: (id: string) => Promise<boolean>;
-  executeSandbox: (id: string, command: string, pythonEnvironment?: "auto" | "managed") => Promise<boolean>;
+  executeSandbox: (id: string, command: string, pythonEnvironment?: "auto" | "managed", workingDirectory?: string) => Promise<boolean>;
   ingestEvent: (event: RuntimeEvent) => void;
   ingestEvents: (events: RuntimeEvent[]) => void;
   setSocketState: (state: SocketState) => void;
@@ -1725,7 +1725,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
     }
   },
 
-  executeSandbox: async (id, command, pythonEnvironment = "auto") => {
+  executeSandbox: async (id, command, pythonEnvironment = "auto", workingDirectory = "") => {
     if (get().sandboxBusy[id]) return false;
     const previousEventIds = new Set(get().events.map((event) => event.id));
     const revision = (get().sandboxRevisions[id] ?? 0) + 1;
@@ -1734,10 +1734,13 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
       sandboxErrors: { ...state.sandboxErrors, [id]: undefined },
       sandboxRevisions: { ...state.sandboxRevisions, [id]: revision },
       cards: state.cards.map((card) => card.id === id
-        ? mergeCardPatch(card, { config: { active_command: command, output: [...(Array.isArray(card.config.output) ? card.config.output : []), `$ ${command}`].slice(-100) } }) : card),
+        ? mergeCardPatch(card, { config: { active_command: command, output_directory: workingDirectory,
+          output: [...(card.config.output_directory === workingDirectory && Array.isArray(card.config.output) ? card.config.output : []), `$ ${command}`].slice(-100) } }) : card),
     }));
     try {
-      const result = pythonEnvironment === "managed"
+      const result = workingDirectory
+        ? await worldApi.executeSandbox(id, command, pythonEnvironment, workingDirectory)
+        : pythonEnvironment === "managed"
         ? await worldApi.executeSandbox(id, command, "managed")
         : await worldApi.executeSandbox(id, command);
       if (get().sandboxRevisions[id] !== revision) return true;
@@ -1758,8 +1761,9 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
           ? mergeCardPatch(card, {
               config: {
                 active_command: "",
+                output_directory: workingDirectory,
                 output: [
-                  ...(Array.isArray(card.config.output) ? card.config.output : []),
+                  ...(card.config.output_directory === workingDirectory && Array.isArray(card.config.output) ? card.config.output : []),
                   ...stdout,
                   ...stderr,
                   ...completion,
@@ -1902,7 +1906,8 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
               normalizedType.includes("agent_") ||
               normalizedType.startsWith("run_") ||
               normalizedType.includes("error"));
-            const existing = Array.isArray(card.config.output) ? card.config.output : [];
+            const outputDirectory = typeof event.payload.working_directory === 'string' ? event.payload.working_directory : card.config.output_directory;
+            const existing = outputDirectory === card.config.output_directory && Array.isArray(card.config.output) ? card.config.output : [];
             const output = shouldAppend && outputText
               ? [...existing, `${event.payload.command_id ? `[${String(event.payload.caller ?? "")} ${String(event.payload.command_id).slice(0, 8)}] ` : ""}${normalizedType.includes("stderr") ? "! " : ""}${outputText}`].slice(-100)
               : existing;
@@ -1910,6 +1915,7 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
               status,
               config: {
                 output,
+                ...(outputDirectory !== undefined ? { output_directory: outputDirectory } : {}),
                 active_command: Array.isArray(event.payload.active_commands)
                   ? event.payload.active_commands.map((item: { argv?: string[] }) => (item.argv ?? []).join(" ")).join(" · ")
                   : normalizedType.includes("command_finished")

@@ -1,7 +1,6 @@
 """Import an authorized host file reference without sending its bytes to the model."""
 from __future__ import annotations
 
-import hashlib
 import mimetypes
 from pathlib import PurePosixPath
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -10,6 +9,7 @@ from pydantic import Field
 
 from . import actions
 from .errors import KnowledgeError, operator_message
+from .file_io import file_chunk_bytes, file_limit, input_file
 
 
 ACTION = "import_artifact"
@@ -18,7 +18,8 @@ TOOL_NAME = "knowledge_import_artifact"
 DESCRIPTION = (
     "Import an authorized conversation attachment or artifact by version_id and path, without exposing bytes or host paths. "
     "A binary preview does not prevent import. Supply project_id to append related files to an existing project; "
-    "otherwise one stable project is created for this attachment. Files start Markdown conversion automatically. "
+    "otherwise one stable project is created for this attachment. By default this retains the original as evidence without conversion or model calls. "
+    "Read files with your Harness native tools; set auto_process=true only when Knowledge Base Markdown conversion is wanted. "
     "Archives return a staged project preview: inspect the proposed boundaries, then call knowledge_project_import_commit. "
     "For experiment files, prepare an upload with knowledge_experiment_bundle_prepare and pass bundle_id. "
     "Retries reuse the source. Follow next_step and knowledge_jobs before reading Markdown or projecting a Space."
@@ -33,28 +34,23 @@ class ArtifactImport(actions.Request):
     project_id: UUID | None = None
     relative_path: str | None = Field(default=None, min_length=1, max_length=1024)
     bundle_id: UUID | None = None
-
-
-class _FileImport(ArtifactImport):
-    data: bytes = Field(min_length=1, max_length=actions.MAX_UPLOAD_BYTES)
+    auto_process: bool = Field(default=False, description='Run Knowledge Base Markdown conversion. Leave false for originals already read by the Agent and imported as evidence.')
 
 
 async def invoke(context, capability, arguments):
     request = ArtifactImport.model_validate(arguments)
-    data = await context.read_artifact_file(
+    async with context.open_artifact_file(
         capability, request.source_collection_id, str(request.version_id), request.path,
-        max_bytes=actions.MAX_UPLOAD_BYTES,
-    )
-    # This internal transfer stays inside the host. The public tool only accepts
-    # file references, and node_resource_action rechecks the destination grant.
-    return await context.node_resource_action(capability, ACTION,
-        {**request.model_dump(mode="json"), "data": data})
+    ) as file:
+        return await context.node_resource_action(capability, ACTION,
+            request.model_dump(mode='json'), files={'file': file})
 
 
 def store_import(context, arguments):
     if not context.actor_id:
         raise KnowledgeError("Import an attachment through knowledge_import_artifact so its source access is verified")
-    request = _FileImport.model_validate(arguments)
+    request = ArtifactImport.model_validate(arguments)
+    file = input_file(context, PurePosixPath(request.path).name)
     filename = PurePosixPath(request.path).name
     if not filename or "\\" in filename or len(filename) > 255:
         raise KnowledgeError("The attachment must have a valid filename of at most 255 characters")
@@ -74,14 +70,14 @@ def store_import(context, arguments):
         if _archive_kind(filename):
             if request.project_id is not None:
                 kb.collections.require(request.project_id)
-            preview = preview_files(context, [{"filename": filename, "data": request.data}],
+            preview = preview_files(context, [{"filename": filename, "file": file}],
                 grouping="single" if request.project_id else "top",
                 identity=f"attachment:{request.source_collection_id}:{request.version_id}:{request.path}")
             if preview.get("committed"):
                 return {**preview["result"], "state": "imported", "next_step": {"tool": "knowledge_projects"}}
             return {**preview, "state": "preview", "next_step": {
                 "tool": "knowledge_project_import_commit", "token": preview["token"],
-                "grouping": preview["grouping"], "depth": preview["depth"],
+                "grouping": preview["grouping"], "depth": preview["depth"], "auto_process": request.auto_process,
                 **({"projects": [{"key": item["key"], "name": item["name"],
                     "project_id": str(request.project_id)} for item in preview["projects"]]} if request.project_id else {})}}
         project_key = uuid5(NAMESPACE_URL,
@@ -96,19 +92,22 @@ def store_import(context, arguments):
         f"oaw:knowledge:artifact:{group_id}:{bundle_id or 'project'}:{request.version_id}:{request.path}:{relative_path}")
     source = kb.sources.get(source_id)
     reused = source is not None
-    digest = hashlib.sha256(request.data).hexdigest()
+    digest = file.sha256
     membership = kb.oaw_experiments.bundle_of_source(source_id) if bundle_id else None
     if bundle_id and (not reused or membership != bundle_id) and kb.oaw_experiments.list(
             bundle_id=bundle_id, status="published", limit=1):
         raise KnowledgeError("This upload has published records; create a new upload for additional files")
     if source is None:
-        source = kb.sources.add_bytes(group_id, request.data, source_id=source_id,
+        source = kb.sources.add_stream(group_id, file.stream, source_id=source_id,
+            max_bytes=file_limit(context), chunk_size=file_chunk_bytes(context),
+            expected_size=file.size_bytes, expected_sha256=digest,
             filename=filename, media_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",
             metadata={"uploaded_by": actions._actor(context), "relative_path": relative_path,
                 "origin": {"collection_id": request.source_collection_id,
                     "version_id": str(request.version_id), "path": request.path},
                 **({"workflow": "experiment", "bundle_id": bundle_id} if bundle_id else {})})
-    elif source.sha256 != digest or group_id not in source.collection_ids:
+    elif (source.sha256 != digest or source.size != file.size_bytes or
+          group_id not in source.collection_ids):
         raise KnowledgeError("The previously imported attachment no longer matches this source")
 
     if bundle_id:
@@ -131,6 +130,9 @@ def store_import(context, arguments):
               "project_id": str(group_id), "reused": reused, "current": str(current.id) == str(source.id)}
     if bundle_id:
         result["bundle_id"] = bundle_id
+    if not request.auto_process:
+        return actions._bounded({**result, 'state': 'imported', 'next_step':
+            {'tool': 'knowledge_experiment_save', 'bundle_id': bundle_id} if bundle_id else {'tool': 'knowledge_sources'}})
     try:
         conversion = actions.process_sources(context, {"source_ids": [str(source.id)]})["jobs"][0]
     except Exception as error:

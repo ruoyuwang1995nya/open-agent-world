@@ -101,8 +101,8 @@ class CardLibraryStore:
         if row is None:
             return None
         payload = json.loads(row[0])
-        # Older catalogs persisted this retired metadata field. Migrate only
-        # stored snapshots; current plugin definitions remain strictly validated.
+        # Upgrade only persisted catalog snapshots; current plugin definitions
+        # remain strictly validated.
         migrated = False
         upgrade_decks = isinstance(payload, dict) and payload.get("schema_version", 1) == 1
         if isinstance(payload, dict) and payload.get("schema_version", 1) in (1, 2):
@@ -116,6 +116,18 @@ class CardLibraryStore:
             definitions = payload.get("card_definitions", {})
             if isinstance(definitions, dict):
                 for definition in definitions.values():
+                    policy = definition.get("state") if isinstance(definition, dict) else None
+                    if (isinstance(policy, dict) and policy.get("mode") == "scoped"
+                            and policy.get("followWorkspace", policy.get("follow_workspace")) is True):
+                        scopes_key = "supportedScopes" if "supportedScopes" in policy else "supported_scopes"
+                        scopes = policy.get(scopes_key)
+                        default = policy.get("defaultScope", policy.get("default_scope", "shared"))
+                        # Workspace followers used to support only session/group.
+                        # Upgrade retained catalogs before strict validation, even
+                        # when their plugin is unavailable during this startup.
+                        if scopes in (["session", "group"], ["group", "session"]) and default in scopes:
+                            policy[scopes_key] = ["shared", *scopes]
+                            migrated = True
                     if isinstance(definition, dict) and "presentation" not in definition:
                         surfaces = definition.get("surfaces")
                         if isinstance(surfaces, dict):

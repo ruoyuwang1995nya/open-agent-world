@@ -2,8 +2,8 @@
 schema_version = 3
 
 [compatibility]
-plugin_api = "1.40"
-oaw = ">=0.1.0,<1"
+plugin_api = "1.47"
+oaw = ">=0.1.0"
 
 [distribution]
 id = "knowledge.base"
