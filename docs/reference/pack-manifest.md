@@ -117,8 +117,10 @@ installation formats are reported explicitly. Host worker providers prepare Pyth
 environments and verified executable artifacts. Arbitrary host npm or system-package
 installation commands are outside the declaration contract.
 
-Managed Python host workers can declare `lock = "requirements.lock"`, a complete
+With Plugin API 1.50, managed Python host workers can declare `lock = "requirements.lock"`, a complete
 hashed requirements file produced by `uv pip compile --universal --generate-hashes`.
+Adapters using `PythonEnvironmentSpec(lockfile=...)` require the same feature level;
+declare `1.50` in both the descriptor and manifest.
 Generate it with the environment's minimum supported Python version using
 `--python-version`; retain platform and Python markers. Installation verifies hashes
 and checks the declared direct requirements against the locked

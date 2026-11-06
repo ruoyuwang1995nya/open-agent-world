@@ -66,6 +66,12 @@ Pack build subprocesses use `NODE_ENV=production` even under the development
 server, so generated JSX and dependency conditions match the release artifact.
 The host retains its development mode; Pack build dependencies are installed normally.
 
+Plugin API 1.50 adds `host.updateConfig(patch, nodeId?)` for an explicit target card.
+Omitting the target keeps the existing current-card behavior. Declare `1.50` in
+both the Python descriptor and manifest when requiring the second argument;
+older hosts can silently ignore it. Host edit actions and backend authorization
+still apply. `host.getAgentInfo(nodeId?)` exposes the existing optional `status`.
+
 Plugin API 1.49 adds `registerSkinMod`, `useSkinCatalog`, `parseSkinMod`, and the
 skin-mod types, default IDs and validation constants. Declare `1.49` in both the
 Python descriptor's `plugin_api_version` and the manifest's `compatibility.plugin_api`
