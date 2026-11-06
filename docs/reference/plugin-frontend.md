@@ -93,6 +93,68 @@ without rebuilding the host. React and the public SDK always use host instances.
 See [Codex](../../packs/codex/frontend/index.tsx) for a working SDK-based settings
 view and its package-owned icon.
 
+### Skin mods
+
+**Settings → Appearance** offers independent color palette, light/dark mode and
+canvas background choices. **Import skin mod** installs a JSON file in the active
+application profile; **Export skin mod** saves the selected palette and background
+as a new portable mod. Users can edit and share these files without building a
+Pack. Importing selects the first supplied palette and background. Start with
+[Blueprint](../../examples/skins/blueprint.oawskin.json).
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "acme.blueprint",
+  "name": "Blueprint",
+  "palettes": [{
+    "id": "drafting",
+    "name": "Drafting",
+    "light": { "--accent": "#1766a3", "--accent-strong": "#124f80" },
+    "dark": { "--accent": "#80bfff", "--accent-strong": "#add6ff" }
+  }],
+  "backgrounds": [{ "id": "squared", "name": "Squared paper", "kind": "grid", "spacing": 32 }]
+}
+```
+
+Palette IDs and background IDs are local to the mod; saved selections use
+`acme.blueprint/drafting` and `acme.blueprint/squared`. The `oaw` namespace is
+reserved for builtins. Colors override the host's existing theme tokens, with
+separate `light` and `dark` maps; omitted tokens retain the host defaults. Use
+`--accent`, `--accent-strong` and `--on-accent` together when changing button
+contrast. Background kinds are `terrain`, `solid`, `dots`, `grid` and `gradient`;
+`spacing` controls dots/grid and `angle` controls gradients. The exported
+`SkinMod` type describes the contract, `COLOR_TOKENS` lists allowed tokens, and
+`parseSkinMod` validates unknown data. IDs use lowercase letters, numbers, dots,
+underscores or hyphens (1–64 characters, starting with a letter); names contain
+1–80 characters. Both collections are required, with at least one entry overall.
+Each file is limited to 64 KiB and 16 entries per collection; a profile supports
+12 imported mods. Dots/grid spacing ranges from 8 to 128, gradient angles from
+0 to 360 degrees.
+
+Color values accept hexadecimal RGB/RGBA only (`#rgb`, `#rgba`, `#rrggbb`,
+`#rrggbbaa`). The schema admits known color tokens and bounded parameters; it
+does not load CSS, image URLs or scripts. Invalid files and duplicate mod IDs are
+rejected atomically. Removing a selected mod falls back to Paper/Terrain while
+preserving its selection IDs, so registering it again restores the selection.
+
+Trusted frontend code can register the same data for its own lifetime:
+
+```ts
+import { parseSkinMod, registerSkinMod } from '@oaw/plugin-api';
+
+const mod = parseSkinMod(JSON.parse(jsonText));
+const unregister = registerSkinMod(mod);
+// When the owner is disposed:
+unregister();
+```
+
+Registration updates the Appearance choices immediately and returns an idempotent
+cleanup function. Runtime registrations are transient; JSON imports are persisted.
+This API does not load Pack modules or introduce an automatic Pack activation
+lifecycle. A view-scoped registration exists only while that view owns it; use
+the JSON import flow for a skin that should remain available across reloads.
+
 ### Human credential configuration
 
 Plugin API 1.42 exposes `host.credentials` on Environment and Sandbox cards in

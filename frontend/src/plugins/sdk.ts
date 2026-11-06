@@ -5,6 +5,9 @@ export type { TutorialDefinition, TutorialStep, TutorialText } from '../tutorial
 export type { DataConsumer, DataSchema, DataQuery, Dataset, DataSourceHost } from './dataSources';
 export type { ExecutionNode, ExecutionEdge, ExecutionPage, ExecutionSnapshot, ExecutionSourceHost } from './executionSources';
 export type { NodePresentation, NodeSurfaceLevel, PluginStateSpec } from "../types/world";
+export { registerSkinMod, useSkinCatalog, DEFAULT_PALETTE_ID, DEFAULT_BACKGROUND_ID } from '../appearance/registry';
+export { parseSkinMod, MAX_SKIN_MOD_BYTES, COLOR_TOKENS } from '../appearance/skinMod';
+export type { SkinMod, SkinPalette, SkinBackground, SkinColors, SkinColorToken, PaletteEntry, BackgroundEntry } from '../appearance/skinMod';
 export { SchemaFields } from "./SchemaFields";
 export { CardFace, CardStock } from '../components/CardFace';
 export type { CardFaceProps } from '../components/CardFace';

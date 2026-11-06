@@ -14,7 +14,7 @@ import { GlueLayer } from "./GlueLayer";
 import { reportInteraction } from "../state/interactions";
 import { findGlue, glueGroup, reflowGlueSurfaces, refreshGlue, beginGlueEdit, cancelGlueRefresh, persistGlue, useGlueStore, type GlueBox, type GlueCandidate } from "../state/glue";
 import { MapAtlas } from "./MapAtlas";
-import { TerrainBackground } from './TerrainBackground';
+import { CanvasBackground } from './CanvasBackground';
 import { CanvasCardLayers } from './CanvasCardLayers';
 import { LegionDeploymentLayer } from './LegionDeploymentLayer';
 import { stableNode, stableNodeList } from './stableNodes';
@@ -1104,7 +1104,7 @@ export function WorldCanvas() {
         aria-label={t("Open Agent World spatial canvas")}
       >
         <CanvasCardLayers />
-        <TerrainBackground />
+        <CanvasBackground />
         <GlueLayer nodes={nodes} preview={gluePreview} />
         <ResizeLayer nodes={nodes} setNodes={setNodes} />
         <GenerationLayer />
