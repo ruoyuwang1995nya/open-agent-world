@@ -93,6 +93,38 @@ describe("authoritative world synchronization", () => {
     });
   });
 
+  it.each([undefined, true])('returns the Run receipt on the plugin launch path with freshContext=%s', async freshContext => {
+    const agent = card('agent', 'agent');
+    useWorldStore.setState({ cards: [agent], activityOpen: false });
+    const receipt = { accepted: true as const, agent_id: agent.id, run_id: 'run-1' };
+    const start = vi.spyOn(worldApi, 'runAgent').mockResolvedValue(receipt);
+    expect(await useWorldStore.getState().requestAgentRun(agent.id, 'Analyze', freshContext)).toEqual(receipt);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledWith(agent.id, 'Analyze', freshContext);
+    expect(useWorldStore.getState().activityOpen).toBe(true);
+    expect(useWorldStore.getState().toasts).toHaveLength(0);
+  });
+
+  it('propagates launch rejection to plugins without showing a native-button toast', async () => {
+    const agent = card('agent', 'agent');
+    useWorldStore.setState({ cards: [agent], activityOpen: false });
+    const failure = new Error('Agent is busy');
+    const start = vi.spyOn(worldApi, 'runAgent').mockRejectedValue(failure);
+    await expect(useWorldStore.getState().requestAgentRun(agent.id, 'Analyze')).rejects.toBe(failure);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(useWorldStore.getState().cards).toEqual([agent]);
+    expect(useWorldStore.getState().activityOpen).toBe(false);
+    expect(useWorldStore.getState().toasts).toHaveLength(0);
+  });
+
+  it('retains the native Agent button error handling without an unhandled rejection', async () => {
+    const start = vi.spyOn(worldApi, 'runAgent').mockRejectedValue(new Error('Agent is busy'));
+    await expect(useWorldStore.getState().runAgent('agent', 'Analyze', true)).resolves.toBeUndefined();
+    expect(start).toHaveBeenCalledWith('agent', 'Analyze', true);
+    expect(useWorldStore.getState().toasts).toHaveLength(1);
+    expect(useWorldStore.getState().toasts[0].title).toBe('Agent did not start');
+  });
+
   it("deletes a large selection in one request and redoes it as one transaction", async () => {
     const cards = Array.from({ length: 1000 }, (_, i) => card(`bulk-${i}`, "agent"));
     const kept = card("kept", "agent");

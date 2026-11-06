@@ -225,3 +225,32 @@ it('binds the SDK to the originating session while exposing no session argument 
   unsubscribe();
   act(() => useConversationView.setState({ activeConversationId: undefined, sessions: {} }));
 });
+
+
+it.each([
+  ['accepted', undefined], ['accepted', true], ['rejected', undefined], ['rejected', true],
+] as const)('preserves %s Agent admission through the actual plugin host bridge with freshContext=%s', async (outcome, freshContext) => {
+  install('test.launcher', { settings: 'view' });
+  const agent: WorldCard = { ...card, id: 'executor', type: 'agent' };
+  useWorldStore.setState({ cards: [card, agent], toasts: [], activityOpen: false });
+  let props!: PluginViewProps;
+  vi.spyOn(registry, 'pluginView').mockReturnValue(((value: PluginViewProps) => {
+    props = value;
+    return <p>Launch fixture</p>;
+  }) as ReturnType<typeof registry.pluginView>);
+  const receipt = { accepted: true as const, agent_id: agent.id, run_id: 'admitted-run' };
+  const failure = new Error('Agent launch refused');
+  const request = vi.spyOn(worldApi, 'runAgent');
+  if (outcome === 'accepted') request.mockResolvedValue(receipt);
+  else request.mockRejectedValue(failure);
+  render(<PluginSurface card={card} slot="settings" level="inspector" />);
+  await screen.findByText('Launch fixture');
+  await act(async () => {
+    const result = props.host.runAgent(agent.id, 'Inspect the assigned work', freshContext);
+    if (outcome === 'accepted') await expect(result).resolves.toBe(receipt);
+    else await expect(result).rejects.toBe(failure);
+  });
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(request).toHaveBeenCalledWith(agent.id, 'Inspect the assigned work', freshContext);
+  expect(useWorldStore.getState().toasts).toHaveLength(0);
+});

@@ -17,6 +17,33 @@ afterEach(() => {
 });
 
 describe("API normalization boundary", () => {
+  it.each([undefined, false, true])('returns the Agent admission receipt with freshContext=%s', async freshContext => {
+    const receipt = { accepted: true, agent_id: 'agent one', run_id: 'run-1' };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(receipt), {
+      status: 202, headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await worldApi.runAgent('agent one', 'Analyze the assigned articles', freshContext)).toEqual(receipt);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/agents/agent%20one/run');
+    expect(init.method).toBe('POST');
+    expect(init.headers.get('X-OAW-State-Session')).toBe('default');
+    expect(JSON.parse(init.body)).toEqual({ prompt: 'Analyze the assigned articles',
+      ...(freshContext ? { fresh_context: true } : {}) });
+  });
+
+  it('rejects a refused Agent launch without retrying or replacing its diagnostics', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: {
+      code: 'conflict', message: 'Agent is busy', request_id: 'launch-refused', retryable: false,
+    } }), { status: 409, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(worldApi.runAgent('agent', 'Analyze')).rejects.toMatchObject({
+      status: 409, message: 'Agent is busy', requestId: 'launch-refused',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('uploads resource files as multipart and follows the host file policy', async () => {
     const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/files/policy')
       ? { max_file_bytes: 10, chunk_bytes: 4 } : { saved: true }), { headers: { 'content-type': 'application/json' } }));
