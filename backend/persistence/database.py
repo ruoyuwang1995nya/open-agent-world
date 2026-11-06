@@ -366,6 +366,15 @@ class Database:
             run_columns = {row['name'] for row in self._connection.execute('PRAGMA table_info(runs)')}
             if 'lifecycle_json' not in run_columns:
                 self._connection.execute("ALTER TABLE runs ADD COLUMN lifecycle_json TEXT NOT NULL DEFAULT '{}'")
+            self._connection.executescript("""
+                CREATE INDEX IF NOT EXISTS runs_recent_idx ON runs(created_at);
+                CREATE INDEX IF NOT EXISTS runs_context_idx ON runs(context_id, agent_id);
+                CREATE INDEX IF NOT EXISTS runs_cleanup_idx ON runs(agent_id, json_extract(lifecycle_json, '$.cleanup'));
+                CREATE INDEX IF NOT EXISTS runs_current_idx ON runs(agent_id, created_at)
+                    WHERE status IN ('created', 'running', 'waiting')
+                       OR json_extract(lifecycle_json, '$.cleanup') IN ('pending', 'failed', 'uncertain')
+                       OR json_extract(lifecycle_json, '$.execution') IN ('running', 'closing');
+            """)
             card_columns = {
                 row["name"] for row in self._connection.execute("PRAGMA table_info(cards)")
             }

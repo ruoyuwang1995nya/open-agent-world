@@ -641,12 +641,12 @@ it("drafts insights through a connected agent and publishes one into the experim
   // The card never saves insights itself: that is the agent's tool call.
   expect(action.mock.calls.some(([name]) => name === "insight_save")).toBe(false);
 
-  // The agent's log opens while it runs, and Stop cancels exactly its live run.
+  // The agent's log opens while it runs; Stop delegates to its runtime owner.
   fireEvent.click(insightsSection.getByRole("button", { name: "Extraction log" }));
   expect(await screen.findByRole("dialog", { name: "Extraction log" })).toBeTruthy();
   fireEvent.click(within(screen.getByRole("dialog", { name: "Extraction log" })).getAllByRole("button", { name: "Close" })[0]);
   fireEvent.click(insightsSection.getByRole("button", { name: "Stop" }));
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/runs/run-1/cancel"), expect.objectContaining({ method: "POST" })));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/agents/lab/stop"), expect.objectContaining({ method: "POST" })));
   expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/runs/run-0/cancel"))).toBe(false);
 
   fireEvent.click(insightsSection.getByRole("button", { name: "Publish" }));

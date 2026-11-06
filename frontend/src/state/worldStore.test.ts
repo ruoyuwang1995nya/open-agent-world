@@ -39,6 +39,17 @@ function deferred<T>() {
 }
 
 describe("authoritative world synchronization", () => {
+  it("keeps one cumulative reasoning snapshot without copying prefixes into card output", () => {
+    const node = { ...card("streaming-agent", "agent"), config: { output: ["tool finished"] } };
+    useWorldStore.setState({ cards: [node], events: [] });
+    for (let index = 1; index <= 100; index++) useWorldStore.getState().ingestEvent({
+      id: `thinking-${index}`, type: "agent_progress", node_id: node.id, run_id: "streaming-run", timestamp: "now",
+      payload: { kind: "model_reasoning", provider_message_id: "message-1", text: "word ".repeat(index) },
+    });
+    expect(useWorldStore.getState().events).toHaveLength(1);
+    expect(useWorldStore.getState().events[0].payload.text).toBe("word ".repeat(100));
+    expect(useWorldStore.getState().cards[0].config.output).toEqual(["tool finished"]);
+  });
   beforeEach(() => {
     vi.restoreAllMocks();
     useLegionDeployments.setState({ pending: [] });

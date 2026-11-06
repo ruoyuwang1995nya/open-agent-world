@@ -12,3 +12,8 @@ scikit-learn==1.7.2
 PyWavelets==1.8.0
 ase==3.26.0
 tensorflow==2.16.2
+# TensorFlow's Windows wheel delegates to this platform-specific distribution.
+tensorflow-intel==2.16.2; sys_platform == "win32"
+# Later releases dropped Windows wheels; retain the compatible platform artifact.
+tensorflow-io-gcs-filesystem==0.31.0; sys_platform == "win32" and python_version < "3.12"
+tensorflow-io-gcs-filesystem==0.37.1; sys_platform != "win32" and python_version < "3.12"

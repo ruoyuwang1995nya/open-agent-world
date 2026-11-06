@@ -124,7 +124,7 @@ runtime-resources = [
 ]
 
 [compatibility]
-plugin_api = "1.41"
+plugin_api = "1.50"
 oaw = ">=0.1.0"
 
 [distribution]
@@ -148,10 +148,11 @@ mode = "pack-build"
 [environments.scientific]
 target = "host-worker"
 provider = "python"
-requires_python = ">=3.10"
+requires_python = ">=3.10,<3.13"
 prepare = "on-use"
 management = "managed"
 sources = [{ path = "src/oaw_xrd/OAW_XRDfit/requirements.txt", kind = "requirements" }]
+lock = "src/oaw_xrd/OAW_XRDfit/requirements.lock"
 verify_imports = ["numpy", "scipy", "pandas", "pymatgen", "tensorflow"]
 verify_script = "src/oaw_xrd/verify_environment.py"
 

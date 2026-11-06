@@ -24,6 +24,19 @@ Use the minimum version required by every API your Pack calls. Older feature
 levels remain compatible unless the contract explicitly states otherwise. The
 following requirements are API facts, not desktop release availability.
 
+Plugin API 1.50 adds the explicit target in frontend `host.updateConfig(patch, nodeId?)`
+and managed Python host-worker lockfiles through `PythonEnvironmentSpec.lockfile`
+and the environment manifest's `lock` field. Packs requiring either feature must
+declare `1.50` in both their descriptor and manifest: older hosts can silently
+ignore the configuration target or reject the lockfile argument. XRD requires
+both features; MatCreator requires the lockfile support.
+
+It also adds the optional `RuntimeProvider.delete_context(agent_id, context_id)`
+hook for releasing idle provider sessions. The host closes admission and checks
+execution and cleanup before calling it; implementations must be safe to retry.
+Providers without retained context resources can keep the default no-op. Packs
+that require this disposal guarantee must declare `1.50`.
+
 Plugin API 1.49 adds the frontend skin-mod SDK: `registerSkinMod`, `useSkinCatalog`,
 `parseSkinMod`, and their exported types, defaults and validation constants.
 Packs requiring these exports must declare `plugin_api_version="1.49"` and

@@ -6,7 +6,7 @@ import json
 import logging
 import math
 from collections.abc import Callable, Coroutine, Mapping
-from contextlib import asynccontextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -1220,7 +1220,7 @@ class ApplicationServices:
 
     async def delete_cards(self, card_ids: list[str], *, expected_revisions: dict[str, int] | None = None) -> list[Card]:
         finish_committed_delete: Coroutine[Any, Any, None]
-        async with self._node_mutation():
+        async with self._node_mutation(), AsyncExitStack() as context_cleanup:
             ids = self.expand_card_deletions(card_ids)
             cards = [self.world.get_card(card_id) for card_id in ids]
             for card in cards:
@@ -1246,6 +1246,11 @@ class ApplicationServices:
             affected = {
                 edge.id: self._affected_agents(edge) for edge in attached_edges.values()
             }
+            session_ids = [session.id for card in cards
+                           if self.plugins.has_trait(card.type, "core.conversation")
+                           for session in self.conversations.list_sessions(card.id)]
+            if session_ids:
+                await context_cleanup.enter_async_context(self._require_run_manager().deleting_contexts(session_ids))
             context = self._node_lifecycle_context()
             transactions: list[NodeLifecycleTransaction] = []
             for card in cards:
@@ -1809,7 +1814,7 @@ class ApplicationServices:
         if current.parent_id == updated.parent_id or not self.plugins.has_trait(current.type, "core.agent"):
             return
         if self.run_manager is not None and any(
-            run.status not in TERMINAL_RUN_STATUSES for run in self.run_manager.list_runs(agent_id=current.id)
+            run.status not in TERMINAL_RUN_STATUSES for run in self.run_manager.store.current(agent_id=current.id, summary=True)
         ):
             raise ConflictError("Stop the Agent's active Runs before changing container membership")
 
@@ -2721,12 +2726,15 @@ class ApplicationServices:
     async def delete_conversation_group(self, conversation_id: str, group_id: str) -> None:
         async with self._node_mutation():
             self._require_card_type(conversation_id, CardType.CONVERSATION)
-            for session in self.conversations.list_sessions(conversation_id):
-                if session.group_id == group_id:
-                    self.node_execution.assert_session_idle(session.id)
-            session_ids = self.conversations.delete_group(conversation_id, group_id)
-            for session_id in session_ids:
-                self.state.delete_scope("session", session_id)
+            sessions = [session for session in self.conversations.list_sessions(conversation_id) if session.group_id == group_id]
+            for session in sessions:
+                self.node_execution.assert_session_idle(session.id)
+            if any(session.is_default for session in sessions):
+                raise ConversationValidationError("the group containing the default General session cannot be deleted")
+            async with self._require_run_manager().deleting_contexts([session.id for session in sessions]):
+                session_ids = self.conversations.delete_group(conversation_id, group_id)
+                for session_id in session_ids:
+                    self.state.delete_scope("session", session_id)
         for session_id in session_ids:
             await self.events.publish(EventType.CONVERSATION_SESSION_DELETED, node_id=conversation_id,
                                       conversation_id=conversation_id, session_id=session_id,
@@ -2741,8 +2749,9 @@ class ApplicationServices:
             if session.is_default:
                 raise ConversationValidationError("the default General session cannot be deleted")
             self.node_execution.assert_session_idle(session_id)
-            self.conversations.delete_session(conversation_id, session_id)
-            self.state.delete_scope("session", session_id)
+            async with self._require_run_manager().deleting_contexts([session_id]):
+                self.conversations.delete_session(conversation_id, session_id)
+                self.state.delete_scope("session", session_id)
         await self.events.publish(
             EventType.CONVERSATION_SESSION_DELETED,
             node_id=conversation_id,
@@ -2863,11 +2872,11 @@ class ApplicationServices:
                 # at a model boundary; unsupported providers retain the queue.
                 if any((run.status not in TERMINAL_RUN_STATUSES or manager.execution_in_progress(run.run_id))
                        and manager._conversation_scope(run) == (conversation_id, session_id)
-                       for run in manager.list_runs(agent_id=agent_id)):
+                       for run in manager.store.current(agent_id=agent_id, summary=True)):
                     raise RuntimeUnavailableError('Conversation session is already running')
                 manager.assert_can_start(agent_id)
             except RuntimeUnavailableError:
-                runs = manager.list_runs(agent_id=agent_id)
+                runs = manager.store.current(agent_id=agent_id, summary=True)
                 active = [
                     run for run in runs
                     if run.status not in TERMINAL_RUN_STATUSES or manager.execution_in_progress(run.run_id)

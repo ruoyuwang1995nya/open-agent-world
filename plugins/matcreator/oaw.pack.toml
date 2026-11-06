@@ -9,7 +9,7 @@ runtime-resources = [
 ]
 
 [compatibility]
-plugin_api = "1.36"
+plugin_api = "1.50"
 oaw = ">=0.1.0"
 
 [distribution]
@@ -41,6 +41,7 @@ requires_python = ">=3.12"
 prepare = "install"
 management = "managed"
 sources = [{ path = "oaw_matcreator/native-requirements.txt", kind = "requirements" }]
+lock = "oaw_matcreator/native-requirements.lock"
 verify_imports = ["litellm", "google.adk.runners", "json_repair", "tiktoken"]
 verify_script = "oaw_matcreator/native_environment.py"
 

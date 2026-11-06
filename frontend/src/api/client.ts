@@ -869,8 +869,8 @@ export const worldApi = {
   artifactDownloadUrl(collectionId: string, versionId: string, path: string): string {
     return hostedInstanceUrl(`${API_BASE}/artifact-collections/${encodeURIComponent(collectionId)}/versions/${encodeURIComponent(versionId)}/content?${new URLSearchParams({ path })}`);
   },
-  lifecycle<T>(retry = false): Promise<T> {
-    return request(`/lifecycle${retry ? "/retry-cleanup" : ""}`, retry ? { method: "POST" } : undefined);
+  lifecycle<T>(retry = false, agentId?: string): Promise<T> {
+    return request(`/lifecycle${retry ? "/retry-cleanup" : ""}${agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ""}`, retry ? { method: "POST" } : undefined);
   },
   cancelRun(runId: string): Promise<unknown> { return request(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" }); },
   getRunReasoning(runId: string, offset = 0): Promise<{ items: import("../types/world").SavedModelThinking[]; next_offset: number | null }> {
@@ -891,9 +891,11 @@ export const worldApi = {
   getRunInvocation(runId: string, kind: "models" | "tools", identity: string): Promise<import("../types/world").SavedInvocation> {
     return request(`/runs/${encodeURIComponent(runId)}/invocations/${kind}/${encodeURIComponent(identity)}`);
   },
-  agentRuns(agentId: string): Promise<{ run_id: string; agent_id: string; status: string; started_at?: string;
-    finished_at?: string; lifecycle: Record<string, unknown> }[]> {
-    return request(`/runs?agent_id=${encodeURIComponent(agentId)}`);
+  runSummary(runId: string): Promise<RunSummary> {
+    return request(`/runs/${encodeURIComponent(runId)}?summary=true`);
+  },
+  agentRuns(agentId: string, before?: string): Promise<RunSummary[]> {
+    return request(`/runs?${new URLSearchParams({ agent_id: agentId, limit: "10", ...(before ? { before } : {}) })}`);
   },
 
   stopAgent(nodeId: string): Promise<Record<string, unknown>> {
@@ -904,6 +906,14 @@ export const worldApi = {
 
   getStorageSettings(): Promise<StorageSettings> {
     return request("/settings/storage");
+  },
+
+  inspectStorage(): Promise<StorageUsage> {
+    return request("/settings/storage/usage", { method: "POST" });
+  },
+
+  deleteUpdateBackup(name: string): Promise<{ removed: string }> {
+    return request(`/settings/storage/backups/${encodeURIComponent(name)}`, { method: "DELETE" });
   },
 
   saveStorageSettings(targetPath: string | null, expectedRevision: number): Promise<StorageSettings> {
@@ -1168,4 +1178,20 @@ export interface StorageSettings {
   revision: number;
   editable: boolean;
   managed_by: string;
+}
+
+export interface StorageUsage {
+  categories: { user_data: number; managed: number; temporary: number; backups: number };
+  reclaimable_bytes: number;
+  measured_at: string;
+  backups: { name: string; path: string; created_at: string; size_bytes: number; removable: boolean }[];
+}
+
+export interface RunSummary {
+  run_id: string;
+  agent_id: string;
+  status: string;
+  started_at?: string;
+  finished_at?: string;
+  lifecycle: Record<string, unknown>;
 }

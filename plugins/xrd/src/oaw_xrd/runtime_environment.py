@@ -15,8 +15,9 @@ def environment_spec():
     requirements = tuple(str(Requirement(line.strip())) for line in
         (PACKAGE / 'OAW_XRDfit/requirements.txt').read_text(encoding='utf-8').splitlines()
         if line.strip() and not line.lstrip().startswith('#'))
-    return PythonEnvironmentSpec('research.xrd', 'scientific', requirements, '>=3.10',
-        ('numpy', 'scipy', 'pandas', 'pymatgen', 'tensorflow'), PACKAGE / 'verify_environment.py')
+    return PythonEnvironmentSpec('research.xrd', 'scientific', requirements, '>=3.10,<3.13',
+        ('numpy', 'scipy', 'pandas', 'pymatgen', 'tensorflow'), PACKAGE / 'verify_environment.py',
+        lockfile=PACKAGE / 'OAW_XRDfit/requirements.lock')
 
 
 def manager(data_root=None):
