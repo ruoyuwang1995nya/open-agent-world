@@ -213,7 +213,7 @@ export function PluginSurface({ card, slot, level, children }: {
       useWorldStore.getState().selectCards([nodeId], { syncCanvas: true });
       useNodeSurfaceStore.getState().openWorkspace(nodeId);
     },
-    runAgent: (nodeId, prompt, freshContext) => useWorldStore.getState().runAgent(nodeId, prompt, freshContext),
+    runAgent: (nodeId, prompt, freshContext) => useWorldStore.getState().requestAgentRun(nodeId, prompt, freshContext),
     onDocumentChange: subscribeToDocumentChanges,
     registerVisualCapture: (captureKind, capture) => registerPluginVisualCapture(card.id, captureKind, capture),
     delegationAction: (action, arguments_) => worldApi.nodeDelegationAction(card.id, action, arguments_, sessionId ?? null),

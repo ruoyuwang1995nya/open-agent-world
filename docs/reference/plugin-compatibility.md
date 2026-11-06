@@ -24,6 +24,14 @@ Use the minimum version required by every API your Pack calls. Older feature
 levels remain compatible unless the contract explicitly states otherwise. The
 following requirements are API facts, not desktop release availability.
 
+Plugin API 1.48 exposes the existing Agent admission receipt through frontend
+`host.runAgent()` and propagates launch request errors to the plugin caller.
+It also adds trusted `NodeResourceContext.run_id` for Agent resource calls.
+A receipt identifies an accepted Run; it does not grant observation access or
+indicate execution/business completion. The existing optional `freshContext`
+argument is preserved. See [trusted Run identity](plugin-documents.md#trusted-run-identity-api-148)
+and the [frontend SDK guide](../../frontend/pack-sdk/README.md).
+
 Plugin API 1.47 unifies referenced file transfers at 512 MiB per file and
 256 KiB per chunk. The host publishes its policy at `/api/files/policy` (also
 under the published Workspace API); browser clients do not carry separate size
