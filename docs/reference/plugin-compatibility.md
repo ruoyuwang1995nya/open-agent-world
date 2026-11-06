@@ -24,6 +24,13 @@ Use the minimum version required by every API your Pack calls. Older feature
 levels remain compatible unless the contract explicitly states otherwise. The
 following requirements are API facts, not desktop release availability.
 
+Plugin API 1.49 adds the frontend skin-mod SDK: `registerSkinMod`, `useSkinCatalog`,
+`parseSkinMod`, and their exported types, defaults and validation constants.
+Packs requiring these exports must declare `plugin_api_version="1.49"` and
+`[compatibility].plugin_api = "1.49"`; earlier hosts do not provide them.
+Registrations accept declarative palettes/backgrounds and return owner-managed
+cleanup. See [skin mods](plugin-frontend.md#skin-mods) for schema and lifetime rules.
+
 Plugin API 1.48 exposes the existing Agent admission receipt through frontend
 `host.runAgent()` and propagates launch request errors to the plugin caller.
 It also adds trusted `NodeResourceContext.run_id` for Agent resource calls.
