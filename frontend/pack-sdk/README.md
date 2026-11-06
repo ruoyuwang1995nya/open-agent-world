@@ -2,8 +2,8 @@
 
 Use `FrontendPlugin` and `PluginViewProps` from `@oaw/plugin-api`.
 
-The npm package version (1.1.0), the host Plugin API feature level (currently
-1.42), and the frontend loading protocol (`apiVersion: 1`) are independent.
+The npm package version (1.1.0), the host Plugin API feature level, and the
+frontend loading protocol (`apiVersion: 1`) are independent.
 Declare the minimum Plugin API actually used in both your Python descriptor
 and source compatibility; a newer SDK package does not upgrade the host.
 See the [version guide](../../docs/reference/plugin-compatibility.md#which-version-to-declare).
@@ -65,6 +65,13 @@ the affected artifact and reload the page.
 Pack build subprocesses use `NODE_ENV=production` even under the development
 server, so generated JSX and dependency conditions match the release artifact.
 The host retains its development mode; Pack build dependencies are installed normally.
+
+Plugin API 1.49 adds `registerSkinMod`, `useSkinCatalog`, `parseSkinMod`, and the
+skin-mod types, default IDs and validation constants. Declare `1.49` in both the
+Python descriptor's `plugin_api_version` and the manifest's `compatibility.plugin_api`
+when requiring these exports. Runtime registrations return an idempotent cleanup
+function and last for their owner's lifetime; Settings JSON imports persist in
+the application profile. See the [skin-mod guide](../../docs/reference/plugin-frontend.md#skin-mods).
 
 Hosts with Plugin API 1.35 expose `useModelOptions`, `useConnectedCards`, `updateCardConfig`, `useReadingPreferences`
 and `setReadingPreferences` expose narrow host presentation/mutation contracts.

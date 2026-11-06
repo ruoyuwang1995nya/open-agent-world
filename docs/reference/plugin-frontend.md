@@ -95,6 +95,11 @@ view and its package-owned icon.
 
 ### Skin mods
 
+The skin-mod SDK requires Plugin API 1.49. Packs using these exports declare
+`plugin_api_version="1.49"` in their descriptor and
+`plugin_api = "1.49"` in their manifest's `[compatibility]` section. JSON imports
+through Settings do not require a Pack or a compatibility declaration.
+
 **Settings → Appearance** offers independent color palette, light/dark mode and
 canvas background choices. **Import skin mod** installs a JSON file in the active
 application profile; **Export skin mod** saves the selected palette and background
