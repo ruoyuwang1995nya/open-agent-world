@@ -84,6 +84,30 @@ these helpers. They use host theme tokens and shared React, and remain optional.
 See the [workspace design guide](../../docs/developers/workspace-design.md) for
 content templates, optional card/section sizing and one-shot layout recipes.
 
+`await host.runAgent(nodeId, prompt, freshContext?)` returns an `AgentRunReceipt` immediately
+after the host accepts the run: `{ accepted: true, agent_id, run_id }`.
+It does not wait for execution to finish or imply that business results were
+saved. The promise rejects on request failure; callers handle that error.
+Do not automatically retry a failed request: a network failure can leave
+admission uncertain. Store the receipt's `run_id` with the current business
+attempt when later execution observations need an exact association.
+Execution-source reads still require their existing connection permissions;
+the receipt does not grant observation access or subscribe a plugin backend.
+
+This exposes the backend's existing admission response; it does not add a new
+launch endpoint or wait for a final result. The existing optional `freshContext`
+argument is preserved: `true` uses a new context without earlier history;
+omitting it or passing `false` retains the host's normal session-context selection.
+The launch request preserves the host-selected state-session header.
+Since Plugin API 1.48, plugin callers
+must handle rejected launch promises themselves. The native Agent button keeps
+its existing error toast; the plugin path does not add that native-button toast.
+Calls that simply await and ignore a successful return can keep doing so.
+Custom host implementations, test doubles, or explicit `Promise<void>` typings
+must return/type the receipt instead. Declare the corresponding minimum Plugin
+API when requiring this behavior.
+
+
 Plugin API 1.41 adds `Tooltip` and `Popover` with host theme tokens, native top-layer
 positioning and keyboard dismissal. They preserve trigger layout, refs and event
 handlers. Use `Tooltip` for noninteractive hints and `Popover` for small interactive

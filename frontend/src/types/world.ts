@@ -16,6 +16,12 @@ export interface NodePresentation {
 }
 
 export type AgentStatus = "idle" | "running" | "waiting" | "error";
+/** Immediate admission receipt, not the eventual outcome of the Run. */
+export interface AgentRunReceipt {
+  accepted: true;
+  agent_id: string;
+  run_id: string;
+}
 export type SandboxStatus = "stopped" | "ready" | "running" | "error";
 export type SandboxWorkspaceAccess = "read_write" | "read_only";
 
