@@ -12,7 +12,7 @@ import { ProjectWorkspace } from "./ProjectWorkspace";
 import type { BridgeProgress, ProjectTab } from "./ProjectWorkspace";
 import { SchemaEditor } from "./SchemaEditor";
 import type { SchemaDetail, SchemaItem } from "./SchemaEditor";
-import type { DraftSchema } from "./SchemaDraftChat";
+import { draftPrompt } from "./SchemaDraftChat";
 import { ExtractDialog } from "./ExtractDialog";
 import type { ExtractDetails } from "./ExtractDialog";
 import { RecordGrid, RecordTable, flattenValues } from "./RecordView";
@@ -220,6 +220,7 @@ export function Workspace({ host, card }: PluginViewProps) {
   // extraction, or just editing them.
   const [dialog, setDialog] = useState<{ mode: "extract" | "edit" }>();
   // A running extraction: which upload, and which agent to watch until it is done.
+  const [drafting, setDrafting] = useState<{ agent_id: string; name: string }>();
   const [extracting, setExtracting] = useState<{ bundle_id: string; agent_id: string; started_at: string }>();
   // The agent run behind the selected upload's last extraction, read from the host's
   // run API: status, error and the tool/progress timeline, so a failure is explained
@@ -257,6 +258,8 @@ export function Workspace({ host, card }: PluginViewProps) {
   const extractAgents = [...new Map([...projectionAgents, ...researchAgents].map(agent => [agent.id, agent])).values()];
   const canRunAgents = !deployed && typeof host.runAgent === "function" && labAgents.length > 0;
   const canExtract = canRunAgents || !!selectedModel;
+  // schema_manage belongs to the research role, so only that agent can draft a schema.
+  const draftAgent = !deployed && typeof host.runAgent === "function" ? researchAgents[0] : undefined;
 
 
   const call = useCallback((action: string, args: Record<string, unknown> = {}, confirm?: boolean) =>
@@ -521,6 +524,24 @@ export function Workspace({ host, card }: PluginViewProps) {
     }, 2500);
     return () => { active = false; window.clearInterval(timer); };
   }, [extracting, host, call, refresh]);
+
+  // The agent saves the schema itself; once it is idle again the list shows the result.
+  useEffect(() => {
+    if (!drafting) return;
+    let active = true;
+    const timer = window.setInterval(() => {
+      host.getAgentInfo(drafting.agent_id).then(async info => {
+        const state = info as { status?: string; active_run_id?: string | null };
+        if (!active || state.status === "running" || state.active_run_id) return;
+        active = false; window.clearInterval(timer);
+        setDrafting(undefined);
+        setNotice(t("{v0} finished drafting — the schema is in the list; open it to review", { v0: drafting.name }));
+        setSchemaDetails({});
+        await refresh();
+      }).catch(() => undefined);
+    }, 2500);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [drafting, host, refresh]);
 
   const loadRunLog = useCallback(async (runId: string) => {
     const current = generation.current;
@@ -845,14 +866,17 @@ export function Workspace({ host, card }: PluginViewProps) {
         </WorkspaceToolbar>
         <Banner error={error} notice={notice} />
         <SchemaEditor busy={busy} schemas={experimentSchemas} kind="experiment" call={call} perform={perform}
-          draft={deployed ? undefined : { ready: !!selectedModel, modelSelect,
+          draft={draftAgent ? { agentName: draftAgent.name,
             convert: async file => {
               const sample = await host.resourceFileAction("schema_sample", { filename: file.name,
                 media_type: file.type || "application/octet-stream" }, { file });
               return { markdown: String(sample.markdown), truncated: !!sample.truncated };
             },
-            send: body => request(`knowledge/${card.id}/schema-draft`, { ...body, model: selectedModel }, false) as
-              Promise<{ reply: string; draft: DraftSchema | null }> }}
+            send: async body => {
+              await host.runAgent!(draftAgent.id, draftPrompt(card.id, body), true);
+              setDrafting({ agent_id: draftAgent.id, name: draftAgent.name });
+              setNotice(t("{v0} is drafting the schema…", { v0: draftAgent.name }));
+            } } : undefined}
           onSaved={async saved => {
             // The experiment tables and forms read definitions from a cache; an edit refills it.
             setSchemaDetails(previous => { const next = { ...previous }; delete next[saved.id]; return next; });
