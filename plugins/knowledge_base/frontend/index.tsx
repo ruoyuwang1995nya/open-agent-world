@@ -17,6 +17,7 @@ import { ExtractDialog } from "./ExtractDialog";
 import type { ExtractDetails } from "./ExtractDialog";
 import { RecordGrid, RecordTable, flattenValues } from "./RecordView";
 import { RecordForm } from "./RecordForm";
+import { LineagePanel } from "./Lineage";
 import "./style.css";
 
 type Settings = { collection_name: string; pdf_engine: string; mineru_base_url: string; vision_model: string; embedding_model: string };
@@ -34,7 +35,7 @@ type ExperimentItem = { id: string; group_id: string; schema_id: string; bundle_
   data: Record<string, unknown>; validation: { valid?: boolean; errors?: string[]; missing?: string[] } | null;
   note: string | null; status: "draft" | "published";
   revision: number; created_by: string | null; created_at: string; updated_at: string };
-type ExperimentDetail = ExperimentItem & { sources: { source_id: string; filename: string | null }[] };
+type ExperimentDetail = ExperimentItem & { sources: { source_id: string; filename: string | null; sha256: string | null; artifact_id: string | null }[] };
 type BundleFile = { source_id: string; filename: string; media_type: string; size: number;
   state: "pending" | "converting" | "converted" | "failed"; job_id: string | null; error: string | null };
 type Bundle = { id: string; group_id: string; schema_id: string; name: string; notes: string;
@@ -194,6 +195,8 @@ export function Workspace({ host, card }: PluginViewProps) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [recordDetails, setRecordDetails] = useState<Record<string, ExperimentDetail>>({});
   const [editingId, setEditingId] = useState("");
+  // The record whose evidence chain is unfolded beneath it.
+  const [tracingId, setTracingId] = useState("");
   const [recordDraft, setRecordDraft] = useState<Record<string, unknown>>({});
   const [recordName, setRecordName] = useState("");
   const [recordNote, setRecordNote] = useState("");
@@ -1132,9 +1135,13 @@ export function Workspace({ host, card }: PluginViewProps) {
                     </>
                     : <>
                       <RecordTable definition={definition} data={record.data} validation={record.validation} />
-                      <p className="knowledge-meta">{t("revision {v0} · from {v1}", { v0: record.revision,
-                        v1: detail ? (detail.sources.map(link => link.filename ?? shortId(link.source_id)).join(", ") || "—") : "…" })}
-                        {record.note ? ` · ${record.note}` : ""}</p>
+                      <p className="knowledge-meta">{t("revision {v0} · from", { v0: record.revision })}{" "}
+                        {detail ? (detail.sources.length ? detail.sources.map((link, index) => <span key={link.source_id} title={link.sha256 ?? undefined}>
+                          {index > 0 && ", "}{link.filename ?? shortId(link.source_id)}</span>) : "—") : "…"}
+                        {record.note ? ` · ${record.note}` : ""}
+                        {" · "}<button type="button" className="knowledge-link" aria-pressed={tracingId === item.id}
+                          onClick={() => setTracingId(tracingId === item.id ? "" : item.id)}>{t("Trace")}</button></p>
+                      {tracingId === item.id && <LineagePanel root={{ record_id: item.id }} call={call} />}
                       {publishPending?.record_id === item.id ? <div role="alert" className="knowledge-confirm">
                         <strong>{t("Publish this record?")}</strong>
                         <p>{publishPending.reasons.join(" ")}</p>
