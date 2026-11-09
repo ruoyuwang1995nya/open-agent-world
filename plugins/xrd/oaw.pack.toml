@@ -9,6 +9,7 @@ runtime-resources = [
     "src/oaw_xrd/history.py",
     "src/oaw_xrd/install_engine_runtime.py",
     "src/oaw_xrd/library.py",
+    "src/oaw_xrd/managed_library.py",
     "src/oaw_xrd/matching.py",
     "src/oaw_xrd/multiphase_components.py",
     "src/oaw_xrd/multiphase_decision.py",

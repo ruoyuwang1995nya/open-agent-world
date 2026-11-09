@@ -21,6 +21,7 @@ import asyncio
 from pathlib import Path
 import sqlite3
 from .library import inspect_library, configured_library_path, library_catalog
+from .managed_library import add_cards, add_structures, remove_entries, list_entries
 from .structures import MatchDocument, prepare_cod_structure, apply_cod_structure, download_structure
 from open_agent_world.plugin_api import ResourceValidationError
 
@@ -36,6 +37,7 @@ class LibraryDocument(BaseModel):
     points: list = Field(default_factory=list)
     peaks: list = Field(default_factory=list)
     slots: list[dict | None] = Field(default_factory=list)
+    managed: dict | None = None
 
 def _library_slots(value, args):
     slot = args.get('slot', 0)
@@ -52,7 +54,7 @@ def unmount_library(value, args):
         return value
     slots[slot] = None
     primary = next((drive for drive in slots if drive), {})
-    return {**LibraryDocument().model_dump(mode='json'), **primary, 'slots': slots}
+    return {**LibraryDocument().model_dump(mode='json'), **primary, 'slots': slots, 'managed': value.get('managed')}
 
 
 def configure_library(value, args):
@@ -69,7 +71,7 @@ def configure_library(value, args):
                 return value
         mounted = inspect_library(path)
         slots[slot] = mounted
-        return {**next(d for d in slots if d), 'slots': slots}
+        return {**next(d for d in slots if d), 'slots': slots, 'managed': value.get('managed')}
     except (ValueError, OSError, sqlite3.Error) as exc:
         raise ResourceValidationError(str(exc)) from exc
 
@@ -78,6 +80,18 @@ async def prepare_library(value, args):
     # SQLite counts and hashing large libraries must not hold the graph gate or
     # occupy the worker event loop. The host rechecks the revision before saving.
     return {'document': await asyncio.to_thread(configure_library, value, args)}
+
+
+async def prepare_add_cards(value, args):
+    return {'document': await asyncio.to_thread(add_cards, value, args)}
+
+
+async def prepare_add_structures(value, args):
+    return {'document': await asyncio.to_thread(add_structures, value, args)}
+
+
+async def prepare_remove_entries(value, args):
+    return {'document': await asyncio.to_thread(remove_entries, value, args)}
 
 class MatchWorkspaceDocument(LibraryDocument, MatchDocument):
     pass
@@ -195,6 +209,10 @@ class XRDPlugin:
                 actions={'configure':NodeDocumentAction(lambda v,a:{**a['document'], 'structure':v.get('structure')}, prepare=prepare_library),
                     'unmount':NodeDocumentAction(lambda v,a:{**unmount_library(v,a), 'structure':v.get('structure')}),
                     'catalog':NodeDocumentAction(library_catalog, read_only=True, project=True),
+                    'add_cards':NodeDocumentAction(lambda v,a:a['document'], prepare=prepare_add_cards),
+                    'add_structures':NodeDocumentAction(lambda v,a:a['document'], prepare=prepare_add_structures),
+                    'remove_entries':NodeDocumentAction(lambda v,a:a['document'], prepare=prepare_remove_entries),
+                    'entries':NodeDocumentAction(list_entries, read_only=True, project=True),
                     'fetch_cod': NodeDocumentAction(apply_cod_structure, prepare=prepare_cod_structure)},
                 downloads={'structure': download_structure},
                 summarize=lambda v: {'cod_id': v['structure']['cod_id']} if v.get('structure') else {})))
