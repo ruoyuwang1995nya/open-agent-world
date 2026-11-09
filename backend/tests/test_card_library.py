@@ -7,7 +7,7 @@ from pydantic import BaseModel, ValidationError
 
 from backend.card_library import KEY, CardLibraryStore, LibraryEdit
 from backend.config import Settings
-from backend.errors import GraphValidationError, RevisionConflictError
+from backend.errors import GraphValidationError, RevisionConflictError, NotFoundError
 from backend.main import create_app
 from backend.persistence.database import Database
 from backend.plugins import PackDefinition, PluginDefinition, PluginDescriptor, create_builtin_registry
@@ -453,6 +453,8 @@ def test_revision_conflicts_and_deck_validation(tmp_path):
         edit(store, "delete_deck", id="starter")
     with pytest.raises(GraphValidationError, match="Only collected"):
         edit(store, "update_deck", id="starter", entries=[{"id": "legion"}])
+    with pytest.raises(NotFoundError, match="Legion no longer exists"):
+        edit(store, "move_entry", id="starter", entry={"kind": "legion_instance", "id": "missing"})
     db.close()
 
 

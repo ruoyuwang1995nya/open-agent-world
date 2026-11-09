@@ -2,6 +2,7 @@ import { useConversationView } from "./conversationView";
 import type { DataSchema } from '../plugins/dataSources';
 import { useOpenFiles } from './openFiles';
 import { useLegionDeployments } from "./legionDeployments";
+import { useLegionWorkspace } from './legionWorkspace';
 import { ensureCardsCollected } from "./cardDependencies";
 import type { MapPinLocation } from "../canvas/MapAtlas";
 import { create } from "zustand";
@@ -31,7 +32,7 @@ import type {
   WorldPosition,
   WorldSnapshot,
 } from "../types/world";
-import { filterCardsToChunks, getViewportChunkKeys, sameViewportChunks, viewportCenterToWorld } from "./chunks";
+import { filterCardsToChunks, getViewportChunkKeys, sameViewportChunks, viewportCenterToWorld, positionToChunk } from "./chunks";
 import { EMPTY_CATALOG, getNodeType } from "./catalog";
 import { buildCardDraft, makeStressCards, mergeCardPatch } from "./helpers";
 import { summarizeLegionSelection } from "./legions";
@@ -384,6 +385,9 @@ interface WorldState {
     nodeIds: string[];
   }) => Promise<LegionSummary | undefined>;
   deleteLegion: (id: string) => Promise<boolean>;
+  loadLegionInstance: (id: string) => Promise<WorldCard | undefined>;
+  openLegionInstance: (id: string) => Promise<boolean>;
+  placeLegionInstance: (id: string, position: WorldPosition) => Promise<boolean>;
   instantiateLegion: (
     id: string,
     anchor?: WorldPosition,
@@ -1046,6 +1050,41 @@ export const useWorldStore = create<WorldState>()(persist((set, get) => ({
       return undefined;
     }
   }),
+
+  loadLegionInstance: async (id) => {
+    try {
+      await get().waitForPositionCommits();
+      const group = await worldApi.getCard(id);
+      if (group.type !== 'legion') throw new Error('This entry no longer points to a Legion.');
+      const key = positionToChunk(group.position).key;
+      const snapshot = await worldApi.getWorld([key]);
+      if (!snapshot.nodes.some(node => node.id === id)) throw new Error('This Legion is no longer available.');
+      set(state => ({ cards: mergeCards(state.cards, snapshot.nodes, state.cardTombstones),
+        edges: mergeEdges(state.edges, snapshot.edges, state.edgeTombstones),
+        loadedChunkKeys: [...new Set([...state.loadedChunkKeys, key, ...chunkKeysFromSnapshot(snapshot)])] }));
+      if (!get().cards.some(node => node.id === id)) throw new Error('This Legion is no longer available.');
+      return get().cards.find(node => node.id === id);
+    } catch (error) {
+      get().pushToast({ tone: 'error', title: 'Legion is unavailable', detail: apiErrorMessage(error) });
+      return undefined;
+    }
+  },
+
+  openLegionInstance: async (id) => {
+    if (!await get().loadLegionInstance(id)) return false;
+    get().selectCards([id], { syncCanvas: true });
+    useLegionWorkspace.getState().open(id);
+    return true;
+  },
+
+  placeLegionInstance: async (id, position) => {
+    if (!await get().loadLegionInstance(id)) return false;
+    await get().updateCardPositions([{ id, position }]);
+    const placed = get().cards.find(node => node.id === id);
+    if (!placed || !samePosition(placed.position, position)) return false;
+    get().selectCards([id], { syncCanvas: true });
+    return true;
+  },
 
   deleteLegion: (id) => withHistoryTransaction(() => withLegionOperation(id, async () => {
     const legion = get().legions.find((item) => item.id === id);

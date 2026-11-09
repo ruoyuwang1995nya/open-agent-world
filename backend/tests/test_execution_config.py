@@ -545,6 +545,58 @@ def test_real_execution_environment_reaches_only_command_and_children(tmp_path):
         assert client.delete(f"/api/nodes/{sandbox['id']}").status_code == 200
 
 
+def test_unreadable_global_bindings_can_be_inspected_and_explicitly_rebound(runtime_client, tmp_path):
+    from cryptography.fernet import Fernet
+    from backend.execution_config import resolve_sandbox_configuration
+    from tests.test_sandbox_workspace import WorkspaceNativeApi
+    client, backend, _ = runtime_client
+    native = WorkspaceNativeApi()
+    backend._native = native
+    services = client.app.state.services
+    agent, sandbox, *_ = setup_skill(client)
+    models = tmp_path / 'models'
+    models.mkdir()
+    variables = {'ACCESS_KEY': {'secret_ref': 'access'}, 'MP_API_KEY': {'secret_ref': 'mp'},
+        'DEEPMD_MODEL_PATH': {'folder_ref': 'model'}, 'PMG_VASP_PSP_DIR': {'folder_ref': 'psp'}, 'REGION': 'keep'}
+    payload = {'environment_variables': variables, 'secrets': {'access': 'private-access', 'mp': 'private-mp'},
+        'folders': {ref: {'path': str(models)} for ref in ('model', 'psp')}}
+    assert client.put('/api/settings/sandbox', json=payload).status_code == 200
+    alien = Fernet(Fernet.generate_key()).encrypt(b'old-host-private-value').decode()
+    def saved_rows():
+        with services.database.locked() as db:
+            return [tuple(row) for row in db.execute("SELECT key,value_json FROM application_settings WHERE key='sandbox' OR key LIKE 'global_execution_%' ORDER BY key")]
+    with services.database.transaction() as db:
+        db.execute("UPDATE application_settings SET value_json=? WHERE key LIKE 'global_execution_%'", (json.dumps(alien),))
+    before = saved_rows()
+    response = client.get('/api/settings/sandbox')
+    assert response.status_code == 200, response.text
+    assert set(response.json()['binding_errors']) == set(variables) - {'REGION'}
+    assert response.json()['secret_bindings'] == {'access': False, 'mp': False}
+    assert response.json()['folder_bindings'] == {} and response.json()['environment_variables'] == variables
+    summary = client.get(f"/api/sandboxes/{sandbox['id']}/configuration").json()
+    assert summary['ready'] is False
+    assert all(v['status'] == 'rebind_required' for v in summary['variables'] if v['name'] != 'REGION')
+    provider, definitions = tools(client, agent)
+    inspected = invoke(client, provider, agent, definitions['inspect_sandbox'], sandbox=sandbox['id'])
+    assert inspected['state'] == 'ready' and inspected['configuration']['ready'] is False
+    failed = client.post(f"/api/sandboxes/{sandbox['id']}/execute", json={'argv': ['cmd.exe']})
+    assert failed.status_code == 422 and 'ACCESS_KEY' in failed.text
+    assert native.runs == []
+    assert client.put('/api/settings/sandbox', json={'environment_variables': variables}).status_code == 422
+    assert saved_rows() == before
+    for data in (response.text, json.dumps(summary), json.dumps(inspected), failed.text):
+        assert alien not in data and 'old-host-private-value' not in data and 'private-access' not in data
+    rebound = client.put('/api/settings/sandbox', json=payload)
+    assert rebound.status_code == 200, rebound.text
+    assert rebound.json()['binding_errors'] == {}
+    assert client.get(f"/api/sandboxes/{sandbox['id']}/configuration").json()['ready'] is True
+    environment, _ = resolve_sandbox_configuration(services, sandbox['id'], folder_mounts=[])
+    assert environment['ACCESS_KEY'] == payload['secrets']['access'] and environment['REGION'] == 'keep'
+    executed = client.post(f"/api/sandboxes/{sandbox['id']}/execute", json={'argv': ['cmd.exe']})
+    assert executed.status_code == 200, executed.text
+    assert native.runs[-1]['argv'] == ('cmd.exe',)
+
+
 def test_global_secret_lifecycle_and_resolution(client):
     from backend.execution_config import resolve_sandbox_configuration, configuration_summary
     from backend.sandbox.settings import SandboxSettingsStore

@@ -1,4 +1,6 @@
 {
+  "Re-enter the secret and save.": ["Re-enter the secret and save.", "请重新填写密钥并保存。"],
+  "Choose the file or folder again and save.": ["Choose the file or folder again and save.", "请重新选择文件或目录并保存。"],
   "Analyze storage": ["Analyze storage", "分析存储占用"],
   "Inspecting storage…": ["Inspecting storage…", "正在检查存储…"],
   "Storage usage": ["Storage usage", "存储占用"],

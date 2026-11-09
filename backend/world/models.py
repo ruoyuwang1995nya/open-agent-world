@@ -256,7 +256,9 @@ class CardBatchPatch(BaseModel):
 class CardsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    updates: Annotated[list[CardBatchPatch], Field(min_length=1, max_length=101)]
+    # A canvas move includes nested resource cards as well as direct Legion
+    # members. Keep the same bounded canvas batch size as deletion.
+    updates: Annotated[list[CardBatchPatch], Field(min_length=1, max_length=10_000)]
 
     @field_validator("updates")
     @classmethod
