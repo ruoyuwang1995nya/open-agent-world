@@ -348,6 +348,28 @@ describe("Application settings", () => {
 });
 
 
+it("shows unreadable bindings and requires a replacement secret before saving", async () => {
+  useWorldStore.setState({ settingsOpen: true });
+  vi.spyOn(worldApi, "getModelConnections").mockResolvedValue(savedCatalog());
+  vi.spyOn(worldApi, "getSandboxRuntimes").mockResolvedValue({ default_runtime: "auto", runtimes: [] });
+  const current = { workspace_root: null, runtime: "auto", environment_variables: { ACCESS_KEY: { secret_ref: "old" } },
+    secret_bindings: { old: false }, binding_errors: { ACCESS_KEY: "Re-enter the secret and save." } };
+  vi.spyOn(worldApi, "getSandboxSettings").mockResolvedValue(current);
+  const save = vi.spyOn(worldApi, "saveSandboxSettings").mockResolvedValue({ ...current, secret_bindings: { old: true }, binding_errors: {} });
+  render(<SettingsPanel />);
+  fireEvent.click(screen.getByRole("button", { name: "Sandbox" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("ACCESS_KEY");
+  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  expect(save).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText("Environment variable 1 value"), { target: { value: "replacement-secret" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+  expect(save.mock.calls[0][0].secrets).toEqual({ old: "replacement-secret" });
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  cleanup();
+});
+
+
 it("saves global secrets with the shared type selector and retains configured bindings", async () => {
   useWorldStore.setState({ settingsOpen: true });
   vi.spyOn(worldApi, "getModelConnections").mockResolvedValue(savedCatalog());

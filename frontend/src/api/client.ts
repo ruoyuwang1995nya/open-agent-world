@@ -547,6 +547,10 @@ export const worldApi = {
     return request<PluginCatalog>("/catalog");
   },
 
+  async getCard(id: string): Promise<WorldCard> {
+    return normalizeCard(await request(`/nodes/${encodeURIComponent(id)}`));
+  },
+
   async getWorld(chunks?: string[]): Promise<WorldSnapshot> {
     const query = chunks?.length
       ? `?chunks=${encodeURIComponent(chunks.join(","))}`
@@ -1126,6 +1130,7 @@ export interface SandboxSettings {
   environment_variables?: Record<string, string | (({ value: string } | { secret_ref: string } | { folder_ref: string } | { file_ref: string } | { path_ref: string }) & { operation?: "replace" | "append" | "prepend"; separator?: string })>;
   secret_bindings?: Record<string, boolean>;
   folder_bindings?: Record<string, EnvironmentFolderBinding>;
+  binding_errors?: Record<string, string>;
   backup_paths?: string[];
 }
 

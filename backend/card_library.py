@@ -50,7 +50,7 @@ class CollectionEntry(Model):
 
 
 class DeckEntry(Model):
-    kind: Literal["node", "legion"] = "node"
+    kind: Literal["node", "legion", "legion_instance"] = "node"
     id: str = Field(min_length=1, max_length=128)
 
 
@@ -305,7 +305,10 @@ class CardLibraryStore:
         for entry in entries:
             if entry in previous:
                 continue  # Unavailable references can be kept or removed without losing the deck.
-            if entry.kind == "legion":
+            if entry.kind == "legion_instance":
+                if not db.execute("SELECT 1 FROM cards WHERE id=? AND type='legion'", (entry.id,)).fetchone():
+                    raise NotFoundError("Legion no longer exists")
+            elif entry.kind == "legion":
                 if db.execute("SELECT 1 FROM legions WHERE id=?", (entry.id,)).fetchone():
                     continue
                 if preset_pack_ids is None:
@@ -400,7 +403,7 @@ class CardLibraryStore:
                         self._validate_additions(db, state, deck.entries, [])
                     # Saved formations had a separate tray; retain them during folder import.
                     formation_decks = [d for d in state.decks
-                        if (d.id == "saved-legions" or any(e.kind == "legion" for e in d.entries)) and d.id not in ids]
+                        if (d.id == "saved-legions" or any(e.kind != "node" for e in d.entries)) and d.id not in ids]
                     state.decks = request.decks + formation_decks
                     state.active_deck_id = next((d.id for d in state.decks if d.entries), state.decks[0].id)
             elif request.action == "set_plugin_enabled":
@@ -442,4 +445,12 @@ class CardLibraryStore:
         result["available_card_ids"] = [cid for cid in state.collection if self.card_available(state, cid)]
         result["available_pack_ids"] = [pack.id for pack in current.packs if self.registry.is_enabled(pack.plugin_id)]
         result["preset_pack_ids"] = self._preset_pack_ids(current.packs)
+        # Existing world Legions can be opened from a deck without making a copy.
+        instances = {}
+        with self.database.locked() as db:
+            for entry in (entry for deck in state.decks for entry in deck.entries if entry.kind == "legion_instance"):
+                row = db.execute("SELECT name,config_json FROM cards WHERE id=? AND type='legion'", (entry.id,)).fetchone()
+                if row:
+                    instances[entry.id] = {"name": row["name"], "description": json.loads(row["config_json"]).get("description", "")}
+        result["legion_instances"] = instances
         return result
