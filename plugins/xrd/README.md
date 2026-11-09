@@ -231,6 +231,24 @@ Re-running a search starts a new lineage. Re-running preoptimization invalidates
 the displayed downstream fit associated with its old parent. Previous run folders
 remain available; failed re-runs do not silently supply a different stage's CIF.
 
+## Use from any Agent
+
+Any core Agent, including the DeepSeek Harness card, can use the XRD tools through graph
+connections (requires Plugin API 1.51); the XRD workbench's own Agents keep working unchanged.
+
+| Connect Agent to | Relationship | Tools |
+|---|---|---|
+| Match node | 运行控制 | `xrd_run_stage` (search, preopt, fit), `xrd_run_stop`, `xrd_run_status`, `xrd_read_results` |
+| Match node | 结果只读 / 结果报告归档 | `xrd_read_results`, `xrd_submit_report` |
+| Spectrum canvas | 导入实验谱 | `xrd_import_pattern` |
+
+`xrd_import_pattern` takes two-column 2θ/intensity text, so the Agent converts other
+formats (xy, xye, xrdml, raw) first; the text is validated and hashed like a UI import.
+It does not update earlier search runs: run the search stage again afterwards. Stage
+tools start the node's normal run and the pipeline still validates run and candidate
+lineage. Two nodes can share only one connection, so 运行控制 also includes result reading;
+use 结果报告归档 instead when the Agent should file reports. Runs started by a tool are detached; stop them with `xrd_run_stop` or the node.
+
 ## Synchronized scientific frames
 
 The match node opens one `xrd.spectrum-canvas` and one `xrd.structure-canvas`, reusing

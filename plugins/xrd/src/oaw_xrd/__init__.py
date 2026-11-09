@@ -11,6 +11,8 @@ from .history import actions as history_actions
 from .sql_history import HistoryAgentBehavior
 from .multiphase_object import register_harness
 from .results_context import register_results_context
+from .pattern_import import register_pattern_import
+from .run_control import register_run_control
 from .documents import InputDocument, import_input, associate
 from open_agent_world.plugin_api import (NodeDocumentDefinition, NodeDocumentAction, NodeDocumentDownload,
     CapabilityDefinition, CapabilityGrantDefinition, RelationshipDefinition)
@@ -131,7 +133,7 @@ class CanvasConfig(BaseModel):
     source_node_id: str = ''
 
 class XRDPlugin:
-    descriptor = PluginDescriptor(id="research.xrd",version="0.3.1",plugin_api_version="1.50",
+    descriptor = PluginDescriptor(id="research.xrd",version="0.3.1",plugin_api_version="1.51",
         requires_plugins=("science.structure-viewer", "data.sqlite"),
         name="XRD / OAW_XRDfit",description="Reference-card screening and candidate-CIF whole-pattern fitting")
     def __init__(self, context=None):
@@ -148,6 +150,8 @@ class XRDPlugin:
         registration.register_runtime_provider("research.xrd",XRDRuntime)
         register_harness(registration)
         register_results_context(registration)
+        register_run_control(registration)
+        register_pattern_import(registration)
         registration.register_relationship(RelationshipDefinition(
             id='xrd.history-store', label='XRD 运行数据库', short_label='运行记录',
             description='结构化保存运行、Jev 决策、评估、Agent 报告和结果文件；只连接一个 SQL database',
@@ -158,7 +162,7 @@ class XRDPlugin:
                 default_name=label, default_size=(600,420), default_status='available', statuses=frozenset({'available'}),
                 config_model=CanvasConfig, templateable=True, template_remap_config=remap_config, traits=frozenset({'xrd.frame-canvas', *({'xrd.readable'} if kind == 'spectrum' else set())}),
                 document=NodeDocumentDefinition(model=InputDocument, initial_value={'kind':'pattern'}, max_size_bytes=40*1024*1024, capture=lambda v: {'kind':'pattern'},
-                    actions={'import':NodeDocumentAction(lambda v,a:import_input({**v,'kind':'pattern'},a)), 'read':NodeDocumentAction(lambda v,a:{**v,'kind':'pattern'},read_only=True,capability_kind='xrd.read')},
+                    actions={'import':NodeDocumentAction(lambda v,a:import_input({**v,'kind':'pattern'},a),capability_kind='xrd.pattern.import'), 'inspect_import':NodeDocumentAction(lambda v,a:{},read_only=True,project=True,capability_kind='xrd.pattern.import'), 'read':NodeDocumentAction(lambda v,a:{**v,'kind':'pattern'},read_only=True,capability_kind='xrd.read')},
                     downloads={'source':lambda v:NodeDocumentDownload(v['filename'] or 'input.txt',base64.b64decode(v['source_base64']))}) if kind == 'spectrum' else NodeDocumentDefinition(model=InputDocument, initial_value={'kind':'canvas'}, capture=lambda v:{'kind':'canvas'}, actions={'read':NodeDocumentAction(lambda v,a:v,read_only=True,capability_kind='xrd.read')}),
                 frontend={'body':'frame-canvas','workspace':'frame-canvas','preview':'frame-canvas'},
                 surfaces={'preview':True,'inspector':True,'workspace':True}))
@@ -202,7 +206,7 @@ class XRDPlugin:
                 frontend={"body": "input", "workspace": "input", "preview": "input"},
                 surfaces={"preview": True, "inspector": True, "workspace": True},
                 document=NodeDocumentDefinition(model=InputDocument, initial_value={"kind": kind}, capture=lambda v: {"kind": v["kind"]}, max_size_bytes=40*1024*1024,
-                    actions={"import": NodeDocumentAction(import_input), "associate": NodeDocumentAction(associate),
+                    actions={"import": NodeDocumentAction(import_input, capability_kind="xrd.pattern.import"), "inspect_import": NodeDocumentAction(lambda v, a: {}, read_only=True, project=True, capability_kind="xrd.pattern.import"), "associate": NodeDocumentAction(associate),
                              "read": NodeDocumentAction(lambda v, a: v, read_only=True, capability_kind="xrd.read")},
                     summarize=lambda v: {"filename": v["filename"], "sha256": v["sha256"], "points": len(v["points"]), "peaks": len(v["peaks"])},
                     remap_references=lambda v, ids: {**v, "reference_node_id": ids.get(v.get("reference_node_id", ""), "")},
